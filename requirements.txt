@@ -1,0 +1,3 @@
+panda3d
+numpy
+# pytest  # optional dev dependency if you want a real test runner
