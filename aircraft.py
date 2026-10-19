@@ -96,10 +96,78 @@ class Aircraft:
     flap_dCL: tuple = (0.0, 0.30, 0.60, 0.90)
     flap_dCD: tuple = (0.0, 0.020, 0.045, 0.080)
 
+    # --- Game assists ---------------------------------------------------
+    # Scales the built-in wing-leveler autopilot gains for this airframe
+    # (faster airframes need gentler corrections).
+    ap_gain: float = 1.0
+
 
 def Cessna172() -> Aircraft:
     """Factory returning the default C172-class parameter set."""
     return Aircraft()
+
+
+@dataclass
+class ViperJet(Aircraft):
+    """F-16-class flyable jet.
+
+    Thrust/weight > 1, so it holds airspeed in any attitude -- vertical
+    climbs, loops and hard maneuvering without bleeding speed the way the
+    C172 does. Control derivatives are detuned for high-speed keyboard
+    flying (a real jet's raw sensitivity would be unflyable here).
+    """
+
+    name: str = "Viper Jet"
+
+    # --- Mass & inertia -------------------------------------------------
+    mass: float = 8500.0
+    Ixx: float = 9000.0
+    Iyy: float = 16000.0
+    Izz: float = 19000.0
+
+    # --- Wing geometry --------------------------------------------------
+    wing_area: float = 27.9
+    wing_span: float = 9.45
+    wing_chord: float = 2.95
+
+    # --- Lift / drag ----------------------------------------------------
+    CL0: float = 0.20
+    CL_alpha: float = 4.0
+    alpha_crit: float = 0.30
+    CD0: float = 0.028
+    induced_k: float = 0.12
+    CY_beta: float = -0.5
+
+    # --- Pitch ----------------------------------------------------------
+    Cm0: float = 0.02
+    Cma: float = 0.9
+    Cmq: float = -14.0
+    Cmde: float = -0.20          # detuned for high-q keyboard flying
+
+    # --- Roll -----------------------------------------------------------
+    Clb: float = 0.09
+    Clp: float = -0.50
+    Clda: float = -0.05          # detuned
+    Cldr: float = -0.02
+
+    # --- Yaw ------------------------------------------------------------
+    Cnb: float = 0.12
+    Cnr: float = -0.18
+    Cnda: float = -0.02
+    Cndr: float = 0.03           # detuned
+
+    # --- Propulsion -----------------------------------------------------
+    # Near-constant 110 kN military thrust at any airspeed.
+    thrust_static: float = 110000.0
+    prop_power: float = 60_000_000.0
+
+    # --- Game assists ---------------------------------------------------
+    ap_gain: float = 0.4
+
+
+def make_viper_jet() -> ViperJet:
+    """Factory returning the ViperJet parameter set."""
+    return ViperJet()
 
 
 # Convenience: flap lookup tables as dicts for readable access.

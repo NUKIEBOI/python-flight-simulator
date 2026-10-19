@@ -44,17 +44,17 @@ pip install -r requirements.txt
 ## Run
 
 ```bash
-cd python-flight-simulator
-git pull
-python main.py
+python main.py            # launch the 3D simulator (needs a display)
+python main.py --test     # headless scripted takeoff, prints telemetry
+python tests/test_flight_model.py   # physics verification tests
 ```
 
 ## Controls
 
 | Key | Action |
 |---|---|
-| `Up` / `W` | Nose up |
-| `Down` / `S` | Nose down |
+| `Up` / `W` | Nose down (push) |
+| `Down` / `S` | Nose up (pull) |
 | `Left` / `A` | Roll left |
 | `Right` / `D` | Roll right |
 | `Q` / `E` | Rudder left / right (steers nosewheel on ground) |
@@ -64,13 +64,26 @@ python main.py
 | `T` / `G` | Elevator trim nose-up / nose-down |
 | `B` | Toggle wheel brakes |
 | `C` | Camera: chase → cockpit → tower → top-down |
-| `P` | Pause |
+| `P` | Free cam (orbit with `A`/`D`, zoom with `W`/`S`; auto-engages autopilot) |
+| `V` | Switch aircraft: C-172 ↔ Viper jet |
+| `H` | Hide/show all UI |
+| `/` | Toggle help overlay |
+| `SPACE` | Pause |
 | `R` | Reset flight |
-| `H` | Toggle help overlay |
 | `Esc` | Quit |
 
 **Takeoff:** hold `Shift` for full throttle, steer with `Q`/`E`,
-rotate at 55 kts (hold `W`), then tap `F` for the autopilot wing leveler.
+rotate at 55 kts (pull `S`) — 140 kts in the Viper jet —
+then tap `F` for the autopilot wing leveler.
+
+## Aircraft
+
+Two flyables, switched with `V` (position and direction are kept):
+
+- **C-172** — the classic trainer: 55 kt rotation, gentle and forgiving.
+- **Viper jet** — F-16-class thrust-to-weight above 1. It holds airspeed in
+  any attitude: climb vertically, loop, and maneuver without bleeding speed
+  the way the Cessna does. Rotate at 140 kts and mind the thrust.
 
 ## Training sortie
 

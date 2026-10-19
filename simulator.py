@@ -46,7 +46,7 @@ from panda3d.core import (
     loadPrcFileData,
 )
 
-from aircraft import Cessna172
+from aircraft import Cessna172, ViperJet
 from atmosphere import Atmosphere
 from controls import ControlState
 from flight_model import FlightModel, quat_to_matrix, GEAR_HEIGHT
@@ -262,7 +262,7 @@ def sim_quat_to_hpr(quat):
 
 HELP_TEXT = """\
 CONTROLS
-  Up / W ............ nose up            Down / S .......... nose down
+  Up / W ............ nose down (push)    Down / S .......... nose up (pull)
   Left / A .......... roll left         Right / D ......... roll right
   Q / E ............. rudder left/right
   Shift ............. throttle up       Ctrl .............. throttle down
@@ -270,11 +270,16 @@ CONTROLS
   T / G ............. elevator trim nose-up / nose-down
   B ................. toggle wheel brakes
   C ................. camera (chase / cockpit / tower / top-down)
-  P ................. pause             R ................. reset flight
-  H ................. toggle this help  Esc ............... quit
+  P ................. free cam (auto-engages autopilot)
+  V ................. switch aircraft (C-172 / Viper jet)
+  H ................. hide/show all UI   / ................. toggle this help
+  SPACE ............. pause             R ................. reset flight
+  Esc ............... quit
 
-Takeoff: full throttle (hold Shift), rotate at 55 kts (hold W).
+Takeoff: full throttle (hold Shift), rotate at 55 kts (pull S) --
+  140 kts in the Viper jet.
 Tap F for the autopilot (holds wings level).
+Free cam: A/D orbit, W/S zoom, P exits.
 Mission: take off, fly 4 gates, intercept the drone, land (R resets).
 """
 
@@ -299,13 +304,18 @@ class FlightSim(ShowBase):
         self.paused = False
         self.ap_enabled = False
         self.ap_pitch_target = 0.0
-        self.cam_mode = 0  # 0 chase, 1 cockpit, 2 tower, 3 top-down
+        self.cam_mode = 0  # 0 chase, 1 cockpit, 2 tower, 3 top-down, 4 free
+        self.ui_hidden = False
+        self.fc_az = 180.0
+        self.fc_dist = 45.0
         self.prop_angle = 0.0
         self.keys = {}
         self.clouds = []
 
         self._build_world()
         self._build_airplane()
+        self._build_jet_plane()
+        self.active_plane = self.plane
         self._build_hud()
         self._bind_keys()
 
@@ -1003,6 +1013,72 @@ class FlightSim(ShowBase):
         nav_light(5.55, 0.7, 1.02, (0.15, 1.0, 0.25, 0.95))     # right green
         self.strobe = nav_light(0, -4.15, 0.55, (1.0, 1.0, 1.0, 1.0))
 
+    def _build_jet_plane(self):
+        """Flyable F-16-ish jet visual (panda axes: x span, y length, z up,
+        nose along +Y)."""
+        gray = (0.46, 0.48, 0.52)
+        dark = (0.16, 0.17, 0.20)
+        glass_c = (0.10, 0.14, 0.22)
+        orange = (1.0, 0.45, 0.08)
+
+        self.jet = self.render.attachNewNode("jet")
+        parts = [
+            # name, ex, ey, ez, color, pos, h-deg
+            ("jfuselage", 1.7, 9.5, 1.7, gray, (0, 0, 0), 0),
+            ("jcanopy", 1.0, 2.4, 0.55, glass_c, (0, 1.6, 1.0), 0),
+            ("jspine", 1.2, 4.0, 0.5, gray, (0, -1.5, 0.95), 0),
+            ("jwing_r", 5.2, 2.6, 0.18, gray, (3.0, -0.6, -0.1), -28),
+            ("jwing_l", 5.2, 2.6, 0.18, gray, (-3.0, -0.6, -0.1), 28),
+            ("jrail_r", 0.28, 1.4, 0.28, dark, (5.35, -1.9, -0.1), -28),
+            ("jrail_l", 0.28, 1.4, 0.28, dark, (-5.35, -1.9, -0.1), 28),
+            ("jstab_r", 2.4, 1.3, 0.14, gray, (1.5, -4.3, 0.25), -22),
+            ("jstab_l", 2.4, 1.3, 0.14, gray, (-1.5, -4.3, 0.25), 22),
+            ("jfin", 0.18, 1.7, 2.4, gray, (0, -4.1, 1.3), 0),
+            ("jfintip", 0.20, 0.6, 0.5, orange, (0, -4.1, 2.55), 0),
+            ("jintake_r", 0.7, 2.2, 0.9, dark, (1.05, 0.8, -0.5), 0),
+            ("jintake_l", 0.7, 2.2, 0.9, dark, (-1.05, 0.8, -0.5), 0),
+        ]
+        for name, ex, ey, ez, color, pos, h in parts:
+            node = NodePath(make_box_node(name, ex, ey, ez, color))
+            node.setPos(*pos)
+            node.setH(h)
+            node.setTwoSided(True)
+            node.reparentTo(self.jet)
+        # Pointed nose cone (apex forward).
+        nose = NodePath(make_cone_node("jnose", 0.85, 2.6, gray))
+        nose.setP(-90)  # apex toward +Y
+        nose.setPos(0, 6.0, 0)
+        nose.reparentTo(self.jet)
+        # Afterburner glow.
+        burner = NodePath(make_box_node("jburner", 0.9, 0.6, 0.9, orange))
+        burner.setPos(0, -4.95, 0)
+        burner.setLightOff()
+        burner.reparentTo(self.jet)
+        self.jet.hide()
+
+    def _switch_aircraft(self):
+        """V key: swap between the C172 and the Viper jet, keeping position
+        and flight direction. The jet gets a minimum sane airspeed."""
+        if isinstance(self.fm.ac, ViperJet):
+            self.fm.ac = Cessna172()
+            self.jet.hide()
+            self.active_plane = self.plane
+            self.active_plane.show()
+            self._radio("Cessna 172 - rotate 55 kts.")
+        else:
+            self.fm.ac = ViperJet()
+            self.plane.hide()
+            self.active_plane = self.jet
+            self.active_plane.show()
+            v = self.fm.airspeed()
+            if v < 75.0:
+                if v > 0.5:
+                    self.fm.vel_b *= 75.0 / v
+                else:
+                    self.fm.vel_b = np.array([75.0, 0.0, 0.0])
+            self._radio("Viper jet - rotate 140 kts. Mind the thrust.")
+        self.ctrl.reset()
+
     # -- HUD --------------------------------------------------------------
     def _label(self, pos, scale=0.040, align=TextNode.ALeft,
                fg=(1, 1, 1, 1)):
@@ -1016,7 +1092,7 @@ class FlightSim(ShowBase):
         self.hud_right = self._label((-1.72, 0.60))
         self.hud_hint = self._label((-1.72, -0.94), scale=0.030,
                                     fg=(0.85, 0.85, 0.88, 0.9))
-        self.hud_hint.setText("H help  |  C camera  |  P pause  |  R reset")
+        self.hud_hint.setText("H hide UI | C camera | P free cam | V aircraft | SPACE pause | R reset")
         self.hud_warn = self._label((0, 0.78), scale=0.058,
                                     align=TextNode.ACenter, fg=(1, 0.18, 0.18, 1))
         self.hud_status = self._label((0, 0.66), scale=0.038,
@@ -1027,6 +1103,11 @@ class FlightSim(ShowBase):
                                      scale=0.034, align=TextNode.ALeft,
                                      fg=(1, 1, 1, 1), bg=(0, 0, 0, 0.55),
                                      shadow=(0, 0, 0, 0.6), mayChange=False)
+        self.help_text.hide()
+        # Everything the H key hides.
+        self.ui_nodes = [self.hud_left, self.hud_right, self.hud_hint,
+                         self.hud_warn, self.hud_status, self.help_text,
+                         self.hud_objective, self.radio_text, self.ai_root]
 
     def _build_attitude_indicator(self):
         """Compact AI: blue/brown ball that pitches and rolls under a fixed
@@ -1034,6 +1115,7 @@ class FlightSim(ShowBase):
         root = NodePath("ai")
         root.reparentTo(self.aspect2d)
         root.setPos(0, 0, -0.74)
+        self.ai_root = root
         S = 0.15  # half-size
 
         frame = CardMaker("ai_frame")
@@ -1106,9 +1188,12 @@ class FlightSim(ShowBase):
         tap("g", self._trim_down)
         tap("b", self._toggle_brakes)
         tap("c", self._cycle_camera)
-        tap("p", self._toggle_pause)
+        tap("space", self._toggle_pause)
         tap("r", self._reset)
-        tap("h", self._toggle_help)
+        tap("h", self._toggle_ui)
+        tap("/", self._toggle_help)
+        tap("p", self._toggle_freecam)
+        tap("v", self._switch_aircraft)
         self.accept("escape", base.userExit)
 
     def _set_key(self, name, held):
@@ -1141,18 +1226,19 @@ class FlightSim(ShowBase):
         """Wing-leveler + pitch-hold. Owns aileron and elevator while on;
         the pilot keeps throttle, rudder, and everything else."""
         c = self.ctrl
+        k = self.fm.ac.ap_gain  # gentler corrections for faster airframes
         pitch, roll, _yaw = self.fm.attitude_euler()  # roll: left-positive
         roll_rate, pitch_rate = self.fm.omega[0], self.fm.omega[1]
         # roll > 0 (banked left) or rolling left -> right aileron (+)
-        ail = 2.0 * roll + 0.5 * roll_rate
+        ail = k * (2.0 * roll + 0.5 * roll_rate)
         # pitch below target or pitching down -> nose-up elevator (+)
-        elev = 1.2 * (self.ap_pitch_target - pitch) - 0.4 * pitch_rate
+        elev = k * (1.2 * (self.ap_pitch_target - pitch) - 0.4 * pitch_rate)
         c.aileron = max(-1.0, min(1.0, ail))
         c.elevator = max(-1.0, min(1.0, elev))
 
     def _cycle_camera(self):
         self.cam_mode = (self.cam_mode + 1) % 4
-        self.plane.show()  # cockpit mode hides it again below if needed
+        self.active_plane.show()  # cockpit mode hides it again below if needed
 
     def _toggle_pause(self):
         self.paused = not self.paused
@@ -1162,6 +1248,34 @@ class FlightSim(ShowBase):
             self.help_text.show()
         else:
             self.help_text.hide()
+
+    def _toggle_ui(self):
+        """H key: hide/show every HUD/UI element (for clean screenshots)."""
+        self.ui_hidden = not self.ui_hidden
+        if self.ui_hidden:
+            self._help_was_shown = not self.help_text.isHidden()
+            for node in self.ui_nodes:
+                node.hide()
+        else:
+            for node in self.ui_nodes:
+                if node is self.help_text and not self._help_was_shown:
+                    continue
+                node.show()
+
+    def _toggle_freecam(self):
+        """P key: cinematic free-orbit camera. Engages the autopilot so the
+        plane flies itself while you orbit (A/D) and zoom (W/S)."""
+        if self.cam_mode == 4:
+            self.cam_mode = 0
+            self._radio("Free cam off - chase camera.")
+        else:
+            self.cam_mode = 4
+            h, _p, _r = sim_quat_to_hpr(self.fm.quat)
+            self.fc_az = h + 180.0
+            self.fc_dist = 45.0
+            if not self.ap_enabled:
+                self._toggle_autopilot()
+            self._radio("Free cam - A/D orbit, W/S zoom, P exits. Autopilot on.")
 
     # -- training sortie --------------------------------------------------
     def _make_ring_node(self, name, r_in, r_out, segs=40):
@@ -1356,9 +1470,10 @@ class FlightSim(ShowBase):
     # -- per-frame update -------------------------------------------------
     def _update_controls_from_keys(self, dt):
         c = self.ctrl
-        # Elevator (arcade-style): Up/W = nose up, Down/S = nose down.
-        elev_target = (1.0 if self._held("up") else 0.0) + \
-                      (-1.0 if self._held("down") else 0.0)
+        # Elevator (classic flight-sim): Up/W = push (nose down),
+        # Down/S = pull (nose up).
+        elev_target = (1.0 if self._held("down") else 0.0) + \
+                      (-1.0 if self._held("up") else 0.0)
         ail_target = (1.0 if self._held("right") else 0.0) + \
                      (-1.0 if self._held("left") else 0.0)
         rud_target = (1.0 if self._held("rud_r") else 0.0) + \
@@ -1413,9 +1528,9 @@ class FlightSim(ShowBase):
 
     def _update_plane_node(self):
         px, py, pz = sim_to_panda(self.fm.pos)
-        self.plane.setPos(px, py, pz)
+        self.active_plane.setPos(px, py, pz)
         h, p, r = sim_quat_to_hpr(self.fm.quat)
-        self.plane.setHpr(h, p, r)
+        self.active_plane.setHpr(h, p, r)
 
     def _update_camera(self, dt):
         if self.camera is None:
@@ -1435,7 +1550,7 @@ class FlightSim(ShowBase):
                       math.cos(hr) * math.cos(pr), math.sin(pr))
         back = np.array([fx, fy, fz])
         if self.cam_mode == 0:  # chase
-            self.plane.show()
+            self.active_plane.show()
             # 16 m behind, 5 m above, in the plane's frame.
             target = plane_pos - back * 16.0 + np.array([0, 0, 5.0])
             cur = np.array(self.camera.getPos())
@@ -1443,19 +1558,34 @@ class FlightSim(ShowBase):
             self.camera.setPos(*smooth)
             self.camera.lookAt(px, py, pz)
         elif self.cam_mode == 1:  # cockpit
-            self.plane.hide()
+            self.active_plane.hide()
             self.camera.setPos(px, py + 0.9, pz + 1.55)
             self.camera.setHpr(h, p, r)
         elif self.cam_mode == 2:  # tower: from the control-tower cab
-            self.plane.show()
+            self.active_plane.show()
             self.camera.setPos(200, -240, 38)
             self.camera.lookAt(px, py, pz)
-        else:  # top-down: high above and slightly behind, looking down
-            self.plane.show()
+        elif self.cam_mode == 3:  # top-down: high above and slightly behind
+            self.active_plane.show()
             target = plane_pos - back * 18.0 + np.array([0, 0, 55.0])
             cur = np.array(self.camera.getPos())
             smooth = cur + (target - cur) * min(1.0, dt * 3.0)
             self.camera.setPos(*smooth)
+            self.camera.lookAt(px, py, pz)
+        else:  # 4: free cam - orbit the plane while the AP flies it
+            self.active_plane.show()
+            az_rate = ((1.0 if self._held("right") else 0.0) -
+                       (1.0 if self._held("left") else 0.0))
+            self.fc_az += az_rate * 70.0 * dt
+            zoom_rate = ((1.0 if self._held("down") else 0.0) -
+                         (1.0 if self._held("up") else 0.0))
+            self.fc_dist = max(12.0, min(500.0,
+                                         self.fc_dist + zoom_rate * 90.0 * dt))
+            el, az = math.radians(18.0), math.radians(self.fc_az)
+            off = np.array([self.fc_dist * math.cos(el) * math.sin(az),
+                            self.fc_dist * math.cos(el) * math.cos(az),
+                            self.fc_dist * math.sin(el)])
+            self.camera.setPos(*(plane_pos + off))
             self.camera.lookAt(px, py, pz)
 
     def _update_hud(self):
@@ -1473,6 +1603,7 @@ class FlightSim(ShowBase):
         thr_n = int(round(c.throttle * 10))
         thr_bar = "[" + "#" * thr_n + "-" * (10 - thr_n) + "]"
         self.hud_left.setText(
+            f"AC  {'VIPER' if isinstance(self.fm.ac, ViperJet) else 'C-172'}\n"
             f"SPD {kts:5.0f} kt\nALT {alt_ft:6.0f} ft\n"
             f"HDG {hdg:03.0f}\nVS {vs_fpm:+5.0f} fpm")
         self.hud_right.setText(
