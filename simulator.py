@@ -44,6 +44,7 @@ from panda3d.core import (
     TextureStage,
     TransparencyAttrib,
     Vec4,
+    WindowProperties,
     loadPrcFileData,
 )
 
@@ -1657,7 +1658,8 @@ class FlightSim(ShowBase):
         win = self.win
         if win is None:
             return
-        props = win.getProperties()
+        # NB: win.getProperties() returns a const object - mutate a fresh one.
+        props = WindowProperties()
         props.setCursorHidden(locked)
         win.requestProperties(props)
         if locked:
