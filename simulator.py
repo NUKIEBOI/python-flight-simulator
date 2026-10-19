@@ -26,7 +26,6 @@ from direct.showbase.ShowBase import ShowBase
 from direct.gui.OnscreenText import OnscreenText
 from panda3d.core import (
     AmbientLight,
-    AntialiasAttrib,
     CardMaker,
     ClockObject,
     DirectionalLight,
@@ -244,7 +243,7 @@ def sim_quat_to_hpr(quat):
 
 HELP_TEXT = """\
 CONTROLS
-  Up / W ............ nose down          Down / S .......... nose up
+  Up / W ............ nose up            Down / S .......... nose down
   Left / A .......... roll left         Right / D ......... roll right
   Q / E ............. rudder left/right
   Shift ............. throttle up       Ctrl .............. throttle down
@@ -255,7 +254,7 @@ CONTROLS
   P ................. pause             R ................. reset flight
   H ................. toggle this help  Esc ............... quit
 
-Takeoff: full throttle (hold Shift), flaps 10 (F), rotate at 55 kts (pull S).
+Takeoff: full throttle (hold Shift), flaps 10 (F), rotate at 55 kts (hold W).
 """
 
 
@@ -265,8 +264,10 @@ class FlightSim(ShowBase):
     def __init__(self):
         super().__init__()
         self.disableMouse()
-        self.render.setAntialias(AntialiasAttrib.MMultisample)
-        self.render.setShaderAuto()  # per-pixel lighting + shadows
+        # Fixed-function pipeline on purpose: setShaderAuto() and MSAA
+        # caused driver-level artifacts on some machines (a duplicated
+        # top-down copy of the scene across the top of the screen, and
+        # textured ground cards failing to render).
 
         self.ac = Cessna172()
         self.fm = FlightModel(self.ac)
@@ -1113,9 +1114,9 @@ class FlightSim(ShowBase):
     # -- per-frame update -------------------------------------------------
     def _update_controls_from_keys(self, dt):
         c = self.ctrl
-        # Elevator: Up/W = push (nose down), Down/S = pull (nose up).
-        elev_target = (1.0 if self._held("down") else 0.0) + \
-                      (-1.0 if self._held("up") else 0.0)
+        # Elevator (arcade-style): Up/W = nose up, Down/S = nose down.
+        elev_target = (1.0 if self._held("up") else 0.0) + \
+                      (-1.0 if self._held("down") else 0.0)
         ail_target = (1.0 if self._held("right") else 0.0) + \
                      (-1.0 if self._held("left") else 0.0)
         rud_target = (1.0 if self._held("rud_r") else 0.0) + \
@@ -1255,7 +1256,6 @@ def main():
     """Entry point for the graphical simulator."""
     loadPrcFileData("", "window-title Python Flight Simulator")
     loadPrcFileData("", "win-size 1280 720")
-    loadPrcFileData("", "framebuffer-multisample 1")
     app = FlightSim()
     app.run()
 

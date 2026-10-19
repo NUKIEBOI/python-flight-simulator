@@ -51,8 +51,8 @@ python tests/test_flight_model.py   # physics verification tests
 
 | Key | Action |
 |---|---|
-| `Up` / `W` | Nose down (push) |
-| `Down` / `S` | Nose up (pull) |
+| `Up` / `W` | Nose up |
+| `Down` / `S` | Nose down |
 | `Left` / `A` | Roll left |
 | `Right` / `D` | Roll right |
 | `Q` / `E` | Rudder left / right (steers nosewheel on ground) |
@@ -68,7 +68,7 @@ python tests/test_flight_model.py   # physics verification tests
 | `Esc` | Quit |
 
 **Takeoff:** hold `Shift` for full throttle, press `F` once for 10° flaps,
-steer with `Q`/`E`, rotate at 55 kts (pull `S`), climb out and raise flaps.
+steer with `Q`/`E`, rotate at 55 kts (hold `W`), climb out and raise flaps.
 
 ## Architecture
 
