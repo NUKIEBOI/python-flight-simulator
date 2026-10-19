@@ -247,14 +247,15 @@ CONTROLS
   Left / A .......... roll left         Right / D ......... roll right
   Q / E ............. rudder left/right
   Shift ............. throttle up       Ctrl .............. throttle down
-  F ................. flaps (cycles 0/10/20/30 deg)
+  F ................. autopilot on/off (wing leveler)
   T / G ............. elevator trim nose-up / nose-down
   B ................. toggle wheel brakes
   C ................. camera (chase / cockpit / tower / top-down)
   P ................. pause             R ................. reset flight
   H ................. toggle this help  Esc ............... quit
 
-Takeoff: full throttle (hold Shift), flaps 10 (F), rotate at 55 kts (hold W).
+Takeoff: full throttle (hold Shift), rotate at 55 kts (hold W).
+Tap F for the autopilot (holds wings level).
 """
 
 
@@ -276,6 +277,8 @@ class FlightSim(ShowBase):
         self.fm.pos = np.array([-480.0, 0.0, GEAR_HEIGHT])
         self.ctrl = ControlState()
         self.paused = False
+        self.ap_enabled = False
+        self.ap_pitch_target = 0.0
         self.cam_mode = 0  # 0 chase, 1 cockpit, 2 tower, 3 top-down
         self.prop_angle = 0.0
         self.keys = {}
@@ -999,7 +1002,7 @@ class FlightSim(ShowBase):
                                       align=TextNode.ACenter,
                                       fg=(0.45, 1.0, 0.45, 1))
         self._build_attitude_indicator()
-        self.help_text = OnscreenText(text=HELP_TEXT, pos=(-1.70, 0.30),
+        self.help_text = OnscreenText(text=HELP_TEXT, pos=(-1.70, 0.20),
                                      scale=0.034, align=TextNode.ALeft,
                                      fg=(1, 1, 1, 1), bg=(0, 0, 0, 0.55),
                                      shadow=(0, 0, 0, 0.6), mayChange=False)
@@ -1077,7 +1080,7 @@ class FlightSim(ShowBase):
             self.accept("shift-" + key, fn)
             self.accept("control-" + key, fn)
 
-        tap("f", self._cycle_flaps)
+        tap("f", self._toggle_autopilot)
         tap("t", self._trim_up)
         tap("g", self._trim_down)
         tap("b", self._toggle_brakes)
@@ -1104,6 +1107,27 @@ class FlightSim(ShowBase):
 
     def _toggle_brakes(self):
         self.ctrl.brakes = not self.ctrl.brakes
+
+    def _toggle_autopilot(self):
+        """F key: engage/disengage the wing-leveler autopilot."""
+        self.ap_enabled = not self.ap_enabled
+        if self.ap_enabled:
+            # Hold the pitch attitude captured at engagement.
+            pitch = self.fm.attitude_euler()[0]
+            self.ap_pitch_target = max(-0.15, min(0.30, pitch))
+
+    def _update_autopilot(self, dt):
+        """Wing-leveler + pitch-hold. Owns aileron and elevator while on;
+        the pilot keeps throttle, rudder, and everything else."""
+        c = self.ctrl
+        pitch, roll, _yaw = self.fm.attitude_euler()  # roll: left-positive
+        roll_rate, pitch_rate = self.fm.omega[0], self.fm.omega[1]
+        # roll > 0 (banked left) or rolling left -> right aileron (+)
+        ail = 2.0 * roll + 0.5 * roll_rate
+        # pitch below target or pitching down -> nose-up elevator (+)
+        elev = 1.2 * (self.ap_pitch_target - pitch) - 0.4 * pitch_rate
+        c.aileron = max(-1.0, min(1.0, ail))
+        c.elevator = max(-1.0, min(1.0, elev))
 
     def _cycle_camera(self):
         self.cam_mode = (self.cam_mode + 1) % 4
@@ -1152,6 +1176,8 @@ class FlightSim(ShowBase):
         dt = min(ClockObject.getGlobalClock().getDt(), 0.05)
         if not self.paused:
             self._update_controls_from_keys(dt)
+            if self.ap_enabled:
+                self._update_autopilot(dt)
             self.fm.step(dt, self.ctrl)
             self.prop_angle = (self.prop_angle
                                + (4.0 + 38.0 * self.ctrl.throttle) * dt)
@@ -1242,6 +1268,7 @@ class FlightSim(ShowBase):
             f"SPD {kts:5.0f} kt\nALT {alt_ft:6.0f} ft\n"
             f"HDG {hdg:03.0f}\nVS {vs_fpm:+5.0f} fpm")
         self.hud_right.setText(
+            f"AP {'ON' if self.ap_enabled else 'off'}\n"
             f"THR {thr_bar} {c.throttle * 100:3.0f}%\n"
             f"FLAP {c.flap_degrees():2d} deg\n"
             f"TRIM {c.trim:+.2f}\nBRK {'ON' if c.brakes else 'off'}")

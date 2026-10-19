@@ -29,6 +29,8 @@ land — all computed from first-principles aerodynamics each physics step.
 - **Three cameras**: chase, cockpit (with attitude indicator), tower flyby.
 - **2D HUD**: airspeed (kts), altitude (ft), heading, vertical speed (fpm),
   throttle %, flap detent, trim, stall warning, on-ground indicator.
+- **Autopilot**: tap `F` for a wing-leveler + pitch-hold autopilot that owns
+  aileron/elevator while you keep throttle and rudder; tap `F` again to fly.
 - **Headless test mode**: scripted takeoff with telemetry, no window needed.
 
 ## Install
@@ -58,7 +60,7 @@ python tests/test_flight_model.py   # physics verification tests
 | `Q` / `E` | Rudder left / right (steers nosewheel on ground) |
 | `Shift` | Throttle up (hold) |
 | `Ctrl` | Throttle down (hold) |
-| `F` | Cycle flaps 0 → 10 → 20 → 30° |
+| `F` | Autopilot on/off (wing leveler + pitch hold) |
 | `T` / `G` | Elevator trim nose-up / nose-down |
 | `B` | Toggle wheel brakes |
 | `C` | Camera: chase → cockpit → tower → top-down |
@@ -67,8 +69,8 @@ python tests/test_flight_model.py   # physics verification tests
 | `H` | Toggle help overlay |
 | `Esc` | Quit |
 
-**Takeoff:** hold `Shift` for full throttle, press `F` once for 10° flaps,
-steer with `Q`/`E`, rotate at 55 kts (hold `W`), climb out and raise flaps.
+**Takeoff:** hold `Shift` for full throttle, steer with `Q`/`E`,
+rotate at 55 kts (hold `W`), then tap `F` for the autopilot wing leveler.
 
 ## Architecture
 
