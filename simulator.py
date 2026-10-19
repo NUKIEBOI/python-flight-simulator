@@ -50,7 +50,7 @@ from panda3d.core import (
 from aircraft import Cessna172
 from atmosphere import Atmosphere
 from controls import ControlState
-from flight_model import FlightModel, quat_to_matrix
+from flight_model import FlightModel, quat_to_matrix, GEAR_HEIGHT
 
 DEG = 180.0 / math.pi
 MS_TO_KTS = 1.94384
@@ -178,6 +178,34 @@ def make_sphere_node(name, radius, sectors=28, rings=14):
     return node
 
 
+def make_cylinder_node(name, radius, height, color, segments=14):
+    """Upright cylinder: side wall + top cap, base ring at z=0."""
+    fmt = GeomVertexFormat.getV3c4()
+    vdata = GeomVertexData(name, fmt, Geom.UHStatic)
+    vw = GeomVertexWriter(vdata, "vertex")
+    cw = GeomVertexWriter(vdata, "color")
+    for zz in (0.0, height):
+        for i in range(segments):
+            a = 2.0 * math.pi * i / segments
+            vw.addData3(radius * math.cos(a), radius * math.sin(a), zz)
+            cw.addData4(*color, 1.0)
+    top_center = 2 * segments
+    vw.addData3(0, 0, height)
+    cw.addData4(*color, 1.0)
+    tris = GeomTriangles(Geom.UHStatic)
+    for i in range(segments):
+        a, b = i, (i + 1) % segments
+        c, d = segments + i, segments + (i + 1) % segments
+        tris.addVertices(a, c, b)   # wall
+        tris.addVertices(b, c, d)
+        tris.addVertices(top_center, c, d)  # cap
+    geom = Geom(vdata)
+    geom.addPrimitive(tris)
+    node = GeomNode(name)
+    node.addGeom(geom)
+    return node
+
+
 def sim_to_panda(pos_sim):
     """Map a sim-frame (x fwd, y right, z up) position to Panda3D coords."""
     x, y, z = pos_sim
@@ -242,6 +270,9 @@ class FlightSim(ShowBase):
 
         self.ac = Cessna172()
         self.fm = FlightModel(self.ac)
+        # Start at the south threshold: the full runway and the base
+        # complex lie ahead, so the takeoff roll shows them off.
+        self.fm.pos = np.array([-480.0, 0.0, GEAR_HEIGHT])
         self.ctrl = ControlState()
         self.paused = False
         self.cam_mode = 0  # 0 chase, 1 cockpit, 2 tower
@@ -495,6 +526,11 @@ class FlightSim(ShowBase):
         ground = self.render.attachNewNode(cm.generate())
         ground.setTexture(self._make_ground_texture())
         ground.setPos(0, 0, -0.05)
+        # Solid fallback: if the texture ever fails to show, grass still does.
+        gbase = NodePath(make_box_node("ground_base", 4000, 4000, 0.1,
+                                       (0.32, 0.46, 0.26)))
+        gbase.setPos(0, 0, -0.12)
+        gbase.reparentTo(self.render)
 
         # Runway as its own card (crisp markings), along the takeoff axis.
         rcm = CardMaker("runway")
@@ -502,6 +538,10 @@ class FlightSim(ShowBase):
         runway = self.render.attachNewNode(rcm.generate())
         runway.setTexture(self._make_runway_texture())
         runway.setPos(0, 0, 0.06)
+        rwbase = NodePath(make_box_node("runway_base", 30.5, 1240.5, 0.08,
+                                        (0.36, 0.36, 0.37)))
+        rwbase.setPos(0, 0, 0.0)
+        rwbase.reparentTo(self.render)
 
         # Sky dome: gradient sphere, unlit, drawn behind everything.
         sky = self.render.attachNewNode(make_sphere_node("sky", 8000.0))
@@ -583,6 +623,12 @@ class FlightSim(ShowBase):
             n.setTexture(concrete if tex is None else tex)
             n.setTexScale(TextureStage.getDefault(), rep_u, rep_v)
             n.setPos(0, 0, z)
+            # Solid fallback under the textured card.
+            base = NodePath(make_box_node(name + "_base", x1 - x0 + 0.5,
+                                          y1 - y0 + 0.5, 0.06,
+                                          (0.42, 0.42, 0.43)))
+            base.setPos((x0 + x1) / 2.0, (y0 + y1) / 2.0, z - 0.05)
+            base.reparentTo(self.render)
             return n
 
         # Parallel taxiway east of the runway + three connectors.
@@ -684,6 +730,46 @@ class FlightSim(ShowBase):
             g.setLightOff()
             g.setDepthWrite(False)
             g.setPos(fx, fy, 19.7)
+
+        # Operations building.
+        ops = NodePath(make_box_node("ops", 34, 16, 9, gray))
+        ops.setPos(160, -205, 4.5)
+        ops.reparentTo(self.render)
+        opsr = NodePath(make_box_node("ops_roof", 36, 18, 1.0, dark))
+        opsr.setPos(160, -205, 9.5)
+        opsr.reparentTo(self.render)
+
+        # Fuel farm: three cylindrical tanks.
+        for i, tx in enumerate((146, 162, 178)):
+            tank = NodePath(make_cylinder_node("fueltank", 6.0, 10.0,
+                                               (0.78, 0.77, 0.72)))
+            tank.setPos(tx, -320, 0)
+            tank.reparentTo(self.render)
+            band = NodePath(make_cylinder_node("tankband", 6.15, 1.2,
+                                               (0.72, 0.10, 0.10)))
+            band.setPos(tx, -320, 8.0)
+            band.reparentTo(self.render)
+
+        # Approach light masts past both runway thresholds.
+        for end in (-1, 1):
+            for k in range(5):
+                ay = end * (660.0 + k * 30.0)
+                mast = NodePath(make_box_node("amast", 0.35, 0.35, 7, dark))
+                mast.setPos(0, ay, 3.5)
+                mast.reparentTo(self.render)
+                bar = NodePath(make_box_node("ambar", 5.0, 0.35, 0.35, dark))
+                bar.setPos(0, ay, 7.0)
+                bar.reparentTo(self.render)
+                acm = CardMaker("aglow")
+                acm.setFrame(-1.4, 1.4, -1.4, 1.4)
+                ag = self.render.attachNewNode(acm.generate())
+                ag.setTexture(self.glow_tex)
+                ag.setColor(1.0, 1.0, 1.0, 0.95)
+                ag.setBillboardPointEye()
+                ag.setTransparency(TransparencyAttrib.MAlpha)
+                ag.setLightOff()
+                ag.setDepthWrite(False)
+                ag.setPos(0, ay, 7.0)
 
         # Windsock near the south end.
         pole = NodePath(make_box_node("pole", 0.18, 0.18, 6.5,
@@ -1021,6 +1107,7 @@ class FlightSim(ShowBase):
 
     def _reset(self):
         self.fm.reset()
+        self.fm.pos = np.array([-480.0, 0.0, GEAR_HEIGHT])
         self.ctrl.reset()
 
     # -- per-frame update -------------------------------------------------
@@ -1116,9 +1203,9 @@ class FlightSim(ShowBase):
             self.plane.hide()
             self.camera.setPos(px, py + 0.9, pz + 1.55)
             self.camera.setHpr(h, p, r)
-        else:  # tower flyby
+        else:  # tower: from the control-tower cab, tracking the plane
             self.plane.show()
-            self.camera.setPos(120, 300, 25)
+            self.camera.setPos(200, -240, 38)
             self.camera.lookAt(px, py, pz)
 
     def _update_hud(self):
