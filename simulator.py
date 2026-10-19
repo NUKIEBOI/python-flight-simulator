@@ -232,14 +232,15 @@ def sim_to_panda(pos_sim):
 def sim_quat_to_hpr(quat):
     """Extract (heading, pitch, roll) degrees in Panda3D's convention.
 
-    Panda composes setHpr(h, p, r) as M = Rz(h) Rx(p) Ry(r) (row vectors).
-    With R_sim the body->world matrix, R_panda = P R_sim P where
-    P maps sim (x fwd, y right, z up) to panda (x right, y fwd, z up).
-    Decomposing M = R_panda^T gives:
-        pitch = asin(M[2,1])            (nose-up positive)
-        heading = atan2(-M[0,1], M[1,1])
-        roll = atan2(-M[2,0], M[2,2])   (left-roll positive, matches display)
-    Verified: pure sim pitch/yaw/roll each extract back correctly.
+    Panda composes setHpr(h, p, r) as M = Ry(r) @ Rx(p) @ Rz(h) (row
+    vectors; verified numerically against getMat()). With M_row = Rp.T,
+    where Rp = P @ R_sim @ P maps the sim frame (x fwd, y right, z up) to
+    the panda frame (x right, y fwd, z up), the decomposition gives:
+        pitch   = asin(M_row[1,2])              (nose-up positive)
+        heading = atan2(-M_row[1,0], M_row[1,1])
+        roll    = atan2(-M_row[0,2], M_row[2,2]) (right-positive, panda style)
+    Verified: pure sim yaw/pitch/roll each extract back to the matching
+    on-screen attitude (nose-left -> H>0, nose-up -> P>0).
     """
     R = quat_to_matrix(quat)
     # R_panda = P @ R @ P with P = [[0,1,0],[1,0,0],[0,0,1]] (symmetric)
@@ -249,9 +250,9 @@ def sim_quat_to_hpr(quat):
         [R[2, 1], R[2, 0], R[2, 2]],
     ])
     M = Rp.T
-    pitch = math.asin(max(-1.0, min(1.0, M[2, 1])))
-    heading = math.atan2(-M[0, 1], M[1, 1])
-    roll = math.atan2(-M[2, 0], M[2, 2])
+    pitch = math.asin(max(-1.0, min(1.0, M[1, 2])))
+    heading = math.atan2(-M[1, 0], M[1, 1])
+    roll = math.atan2(-M[0, 2], M[2, 2])
     return heading * DEG, pitch * DEG, roll * DEG
 
 
@@ -1199,7 +1200,8 @@ class FlightSim(ShowBase):
             px, py, pz = sim_to_panda((gx, gy, gz))
             ring.setPos(px, py, pz)
             ppx, ppy, _ppz = sim_to_panda((prev[0], prev[1], 0.0))
-            ring.setH(math.degrees(math.atan2(px - ppx, py - ppy)))
+            # Face along the travel direction (panda H>0 = nose toward -X).
+            ring.setH(math.degrees(math.atan2(-(px - ppx), py - ppy)))
             pole = self.render.attachNewNode(
                 make_box_node(f"gatepole{idx}", 2.5, 2.5, 150.0, (1.0, 0.45, 0.05)))
             pole.setLightOff()
@@ -1275,7 +1277,8 @@ class FlightSim(ShowBase):
             px, py, pz = sim_to_panda(dpos)
             self.drone.setPos(px, py, pz)
             vx, vy = -math.sin(a), math.cos(a)  # sim-frame velocity direction
-            self.drone.setH(math.degrees(math.atan2(vy, vx)))
+            # Panda H>0 = nose toward -X: H = atan2(-dx, dy) for panda dir (vy, vx).
+            self.drone.setH(math.degrees(math.atan2(-vy, vx)))
         # Radio message fade.
         if self.msn_radio_timer > 0.0:
             self.msn_radio_timer -= dt
@@ -1426,8 +1429,9 @@ class FlightSim(ShowBase):
         h, p, r = sim_quat_to_hpr(self.fm.quat)
         plane_pos = np.array([px, py, pz])
         # Forward vector in panda frame from heading/pitch.
+        # (Panda: H>0 turns the nose toward -X, so fx carries a minus sign.)
         hr, pr = math.radians(h), math.radians(p)
-        fx, fy, fz = (math.sin(hr) * math.cos(pr),
+        fx, fy, fz = (-math.sin(hr) * math.cos(pr),
                       math.cos(hr) * math.cos(pr), math.sin(pr))
         back = np.array([fx, fy, fz])
         if self.cam_mode == 0:  # chase
