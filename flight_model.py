@@ -295,8 +295,10 @@ class FlightModel:
             F += R.T @ F_lat_w
 
             # Nosewheel steering from rudder + yaw damping on the ground.
+            # Gain 0.15 gives a firm but controllable turn (~30 deg/s max at
+            # taxi speed); it naturally fades as lift unloads the wheels.
             pitch, roll, _yaw = self._euler_from_R(R)
-            M[2] += dr * weight_on_wheels * 1.5 - r * 3000.0
+            M[2] += dr * weight_on_wheels * 0.15 - r * 3000.0
             # Pitch attitude on the ground is held by the gear geometry: a
             # stiff spring toward a slight nose-up taxi attitude. The pilot
             # overcomes it with elevator to rotate - but only once there is
