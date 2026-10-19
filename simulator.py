@@ -197,6 +197,95 @@ def make_sphere_node(name, radius, sectors=28, rings=14):
     return node
 
 
+# --- Lofted airframe geometry -------------------------------------------
+# These build smooth, real-airplane shapes (tapered fuselage, airfoil
+# wings) instead of stacked boxes.
+
+# Simple cambered airfoil profile: (chord fraction, thickness fraction).
+AIRFOIL = [(0.00, 0.000), (0.05, 0.030), (0.15, 0.048), (0.30, 0.058),
+           (0.50, 0.055), (0.70, 0.042), (0.90, 0.020), (1.00, 0.003),
+           (1.00, -0.003), (0.90, -0.014), (0.70, -0.028), (0.50, -0.035),
+           (0.30, -0.034), (0.15, -0.026), (0.05, -0.013), (0.00, 0.000)]
+
+
+def _ellipse_loop(hw, hh, zc, segs=16):
+    """Elliptical cross-section loop: returns [(x, z), ...]."""
+    return [(hw * math.cos(2.0 * math.pi * i / segs),
+             zc + hh * math.sin(2.0 * math.pi * i / segs))
+            for i in range(segs)]
+
+
+def _airfoil_loop(le, chord, base, chord_axis=1):
+    """Airfoil cross-section loop.
+
+    le: leading-edge position along the chord axis; chord extends toward
+    -chord_axis from there. base: offset along the thickness axis.
+    chord_axis=1 -> loop points are (chordwise_y, thickness_z);
+    chord_axis=0 -> loop points are (thickness_x, chordwise_y).
+    """
+    pts = []
+    for cf, tf in AIRFOIL:
+        c = le - cf * chord
+        t = base + tf * chord
+        pts.append((c, t) if chord_axis == 1 else (t, c))
+    return pts
+
+
+def make_loft_node(name, sections, color, axis="y"):
+    """Loft closed cross-section loops into a smooth solid.
+
+    sections: list of (pos, [(u, v), ...]) with equal-length loops.
+    axis: 'y' -> vertex (u, pos, v); 'x' -> (pos, u, v); 'z' -> (u, v, pos).
+    Stitches consecutive loops and caps both ends.
+    """
+    fmt = GeomVertexFormat.getV3c4()
+    vdata = GeomVertexData(name, fmt, Geom.UHStatic)
+    vw = GeomVertexWriter(vdata, "vertex")
+    cw = GeomVertexWriter(vdata, "color")
+    n = len(sections[0][1])
+    for pos, loop in sections:
+        for (u, v) in loop:
+            if axis == "y":
+                vw.addData3(u, pos, v)
+            elif axis == "x":
+                vw.addData3(pos, u, v)
+            else:
+                vw.addData3(u, v, pos)
+            cw.addData4(*color, 1.0)
+    tris = GeomTriangles(Geom.UHStatic)
+    for s in range(len(sections) - 1):
+        a0 = s * n
+        b0 = (s + 1) * n
+        for i in range(n):
+            j = (i + 1) % n
+            tris.addVertices(a0 + i, b0 + i, b0 + j)
+            tris.addVertices(a0 + i, b0 + j, a0 + j)
+    for s, flip in ((0, True), (len(sections) - 1, False)):
+        pos, loop = sections[s]
+        cu = sum(p[0] for p in loop) / n
+        cv = sum(p[1] for p in loop) / n
+        ci = vdata.getNumRows()
+        if axis == "y":
+            vw.addData3(cu, pos, cv)
+        elif axis == "x":
+            vw.addData3(pos, cu, cv)
+        else:
+            vw.addData3(cu, cv, pos)
+        cw.addData4(*color, 1.0)
+        base = s * n
+        for i in range(n):
+            j = (i + 1) % n
+            if flip:
+                tris.addVertices(ci, base + j, base + i)
+            else:
+                tris.addVertices(ci, base + i, base + j)
+    geom = Geom(vdata)
+    geom.addPrimitive(tris)
+    node = GeomNode(name)
+    node.addGeom(geom)
+    return node
+
+
 def make_cylinder_node(name, radius, height, color, segments=14):
     """Upright cylinder: side wall + top cap, base ring at z=0."""
     fmt = GeomVertexFormat.getV3c4()
@@ -938,8 +1027,8 @@ class FlightSim(ShowBase):
 
     # -- airplane ---------------------------------------------------------
     def _build_airplane(self):
-        """C172-ish model with a rounded fuselage (panda axes: x span,
-        y length, z up, nose along +Y)."""
+        """C172 built from lofted airframe parts: smooth tapered fuselage,
+        airfoil wings/tail, glass canopy (panda: x span, y length, z up)."""
         white = (0.93, 0.93, 0.95)
         red = (0.72, 0.10, 0.10)
         dark = (0.10, 0.11, 0.14)
@@ -947,53 +1036,52 @@ class FlightSim(ShowBase):
 
         self.plane = self.render.attachNewNode("plane")
 
-        def part(node, pos, h=0.0, p=0.0, r=0.0):
+        def part(node, pos=(0, 0, 0)):
             node.setPos(*pos)
-            node.setH(h)
-            node.setP(p)
-            node.setR(r)
             node.setTwoSided(True)
             node.reparentTo(self.plane)
             return node
 
-        # Rounded fuselage: cowling + cabin tube + tapered tail cone.
-        part(NodePath(make_cylinder_node("cowling", 0.60, 1.8, white)),
-             (0, 3.6, 0.10), p=-90)
-        part(NodePath(make_cylinder_node("cabin_tube", 0.68, 4.5, white)),
-             (0, -0.9, 0.15), p=-90)
-        part(NodePath(make_cone_node("tailcone", 0.68, 3.6, white)),
-             (0, -0.9, 0.25), p=90)  # apex aft
-        # Red cheatline.
-        part(NodePath(make_box_node("stripe", 1.38, 8.2, 0.16, red)),
-             (0, 0.5, -0.28))
-        # Windshield + side windows.
-        part(NodePath(make_box_node("windshield", 0.95, 0.08, 0.75, glass_c)),
-             (0, 2.75, 0.72), p=28)
+        # Fuselage: smooth tapered loft, tail tip to firewall.
+        fus = [(y, _ellipse_loop(hw, hh, zc)) for (y, hw, hh, zc) in (
+            (-4.6, 0.14, 0.18, 0.38), (-3.6, 0.32, 0.38, 0.34),
+            (-2.2, 0.52, 0.60, 0.30), (-0.8, 0.66, 0.74, 0.27),
+            (0.6, 0.71, 0.82, 0.26), (1.8, 0.70, 0.80, 0.24),
+            (2.8, 0.66, 0.72, 0.20), (3.6, 0.60, 0.64, 0.16))]
+        part(NodePath(make_loft_node("fuselage", fus, white)))
+        # Red engine cowling.
+        cowl = [(y, _ellipse_loop(hw, hh, zc)) for (y, hw, hh, zc) in (
+            (3.6, 0.60, 0.64, 0.16), (4.4, 0.58, 0.60, 0.14),
+            (5.1, 0.48, 0.48, 0.12), (5.45, 0.30, 0.30, 0.12))]
+        part(NodePath(make_loft_node("cowling", cowl, red)))
+        # Glass canopy hump.
+        canopy = [(y, _ellipse_loop(hw, hh, zc)) for (y, hw, hh, zc) in (
+            (1.5, 0.42, 0.30, 0.80), (2.1, 0.52, 0.42, 0.86),
+            (2.8, 0.48, 0.38, 0.84), (3.3, 0.28, 0.22, 0.74))]
+        part(NodePath(make_loft_node("canopy", canopy, glass_c)))
+
+        # Wings: tapered airfoil lofts with dihedral; red tip caps.
         for side in (-1, 1):
-            part(NodePath(make_box_node("sidewin", 0.06, 1.7, 0.45, glass_c)),
-                 (side * 0.69, 1.9, 0.62))
-            part(NodePath(make_box_node("rearwin", 0.06, 0.9, 0.40, glass_c)),
-                 (side * 0.65, 0.55, 0.60))
-        # High wing with slight dihedral + red tips.
-        part(NodePath(make_box_node("wing_c", 2.4, 1.7, 0.15, white)),
-             (0, 0.9, 1.02))
-        for side in (-1, 1):
-            part(NodePath(make_box_node("wing_o", 4.6, 1.5, 0.13, white)),
-                 (side * 4.5, 0.9, 1.10), r=side * -4.0)
-            part(NodePath(make_box_node("wingtip", 0.5, 1.3, 0.14, red)),
-                 (side * 6.85, 0.9, 1.26), r=side * -4.0)
+            s = side
+            white_sec = [(s * 0.35, _airfoil_loop(1.85, 1.75, 1.00)),
+                         (s * 5.45, _airfoil_loop(1.48, 1.20, 1.29))]
+            part(NodePath(make_loft_node("wing", white_sec, white, axis="x")))
+            red_sec = [(s * 5.45, _airfoil_loop(1.48, 1.20, 1.29)),
+                       (s * 5.95, _airfoil_loop(1.43, 1.13, 1.33))]
+            part(NodePath(make_loft_node("wingtip", red_sec, red, axis="x")))
             # Wing struts (diagonal).
-            part(NodePath(make_box_node("wstrut", 0.09, 0.55, 2.15, white)),
-                 (side * 1.75, 0.7, 0.32), r=side * -53.0)
-        # Tail: stabilizer + swept red fin + dorsal extension.
-        part(NodePath(make_box_node("hstab", 3.2, 1.0, 0.10, white)),
-             (0, -4.0, 0.45))
-        part(NodePath(make_box_node("fin", 0.14, 1.15, 1.8, red)),
-             (0, -4.05, 1.30), p=10)
-        part(NodePath(make_box_node("fintip", 0.15, 0.9, 0.30, white)),
-             (0, -4.22, 2.15), p=10)
-        part(NodePath(make_box_node("dorsal", 0.10, 1.7, 0.45, red)),
-             (0, -2.85, 0.98), p=24)
+            strut = NodePath(make_box_node("wstrut", 0.09, 0.55, 2.15, white))
+            part(strut, (s * 1.75, 0.7, 0.32))
+            strut.setR(s * -53.0)
+            # Horizontal stabilizer.
+            hstab = [(s * 0.15, _airfoil_loop(-3.35, 1.05, 0.62)),
+                     (s * 1.75, _airfoil_loop(-3.55, 0.70, 0.66))]
+            part(NodePath(make_loft_node("hstab", hstab, white, axis="x")))
+        # Vertical fin (red, lofted along z).
+        fin = [(0.75, _airfoil_loop(-3.20, 1.35, 0.0, chord_axis=0)),
+               (2.55, _airfoil_loop(-3.95, 0.80, 0.0, chord_axis=0))]
+        part(NodePath(make_loft_node("fin", fin, red, axis="z")))
+
         # Landing gear with fairings.
         for name, ex, ey, ez, pos in (
                 ("fair_l", 0.38, 0.95, 0.55, (-0.85, 1.6, -0.78)),
