@@ -61,7 +61,7 @@ python tests/test_flight_model.py   # physics verification tests
 | `F` | Cycle flaps 0 → 10 → 20 → 30° |
 | `T` / `G` | Elevator trim nose-up / nose-down |
 | `B` | Toggle wheel brakes |
-| `C` | Camera: chase → cockpit → tower |
+| `C` | Camera: chase → cockpit → tower → top-down |
 | `P` | Pause |
 | `R` | Reset flight |
 | `H` | Toggle help overlay |

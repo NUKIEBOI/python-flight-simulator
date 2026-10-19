@@ -251,7 +251,7 @@ CONTROLS
   F ................. flaps (cycles 0/10/20/30 deg)
   T / G ............. elevator trim nose-up / nose-down
   B ................. toggle wheel brakes
-  C ................. camera (chase / cockpit / tower)
+  C ................. camera (chase / cockpit / tower / top-down)
   P ................. pause             R ................. reset flight
   H ................. toggle this help  Esc ............... quit
 
@@ -275,7 +275,7 @@ class FlightSim(ShowBase):
         self.fm.pos = np.array([-480.0, 0.0, GEAR_HEIGHT])
         self.ctrl = ControlState()
         self.paused = False
-        self.cam_mode = 0  # 0 chase, 1 cockpit, 2 tower
+        self.cam_mode = 0  # 0 chase, 1 cockpit, 2 tower, 3 top-down
         self.prop_angle = 0.0
         self.keys = {}
         self.clouds = []
@@ -586,15 +586,15 @@ class FlightSim(ShowBase):
             c.setDepthWrite(False)
             self.clouds.append((c, rnd.uniform(2.0, 5.0)))
 
-        # Lighting: warm sun with shadows + cool sky fill.
+        # Lighting: warm sun + cool sky fill.
+        # NOTE: real-time shadows are OFF. They caused a driver-level bug on
+        # some machines where the shadow pass leaked into the main view as
+        # a duplicated top-down copy of the scene across the top of the
+        # screen. Re-enable only on machines verified to handle it.
         sun = DirectionalLight("sun")
         sun.setColor(Vec4(1.0, 0.94, 0.82, 1.0))
-        sun.setShadowCaster(True, 2048, 2048)
         self.sun_np = self.render.attachNewNode(sun)
         self.sun_np.setHpr(35, -50, 0)
-        lens = self.sun_np.node().getLens()
-        lens.setFilmSize(320, 320)
-        lens.setNearFar(1, 1200)
         self.render.setLight(self.sun_np)
         amb = AmbientLight("amb")
         amb.setColor(Vec4(0.42, 0.47, 0.58, 1.0))
@@ -986,10 +986,10 @@ class FlightSim(ShowBase):
                             fg=fg, shadow=(0, 0, 0, 0.75), mayChange=True)
 
     def _build_hud(self):
+        # All readouts live on the left side of the screen.
         self.hud_left = self._label((-1.72, 0.90))
-        self.hud_right = self._label((1.72, 0.90), align=TextNode.ARight)
-        self.hud_hint = self._label((1.72, -0.94), scale=0.030,
-                                    align=TextNode.ARight,
+        self.hud_right = self._label((-1.72, 0.60))
+        self.hud_hint = self._label((-1.72, -0.94), scale=0.030,
                                     fg=(0.85, 0.85, 0.88, 0.9))
         self.hud_hint.setText("H help  |  C camera  |  P pause  |  R reset")
         self.hud_warn = self._label((0, 0.78), scale=0.058,
@@ -998,7 +998,7 @@ class FlightSim(ShowBase):
                                       align=TextNode.ACenter,
                                       fg=(0.45, 1.0, 0.45, 1))
         self._build_attitude_indicator()
-        self.help_text = OnscreenText(text=HELP_TEXT, pos=(-1.70, 0.60),
+        self.help_text = OnscreenText(text=HELP_TEXT, pos=(-1.70, 0.30),
                                      scale=0.034, align=TextNode.ALeft,
                                      fg=(1, 1, 1, 1), bg=(0, 0, 0, 0.55),
                                      shadow=(0, 0, 0, 0.6), mayChange=False)
@@ -1093,7 +1093,7 @@ class FlightSim(ShowBase):
         self.ctrl.brakes = not self.ctrl.brakes
 
     def _cycle_camera(self):
-        self.cam_mode = (self.cam_mode + 1) % 3
+        self.cam_mode = (self.cam_mode + 1) % 4
         self.plane.show()  # cockpit mode hides it again below if needed
 
     def _toggle_pause(self):
@@ -1170,10 +1170,6 @@ class FlightSim(ShowBase):
         self.plane.setPos(px, py, pz)
         h, p, r = sim_quat_to_hpr(self.fm.quat)
         self.plane.setHpr(h, p, r)
-        # Keep the shadow frustum centered on the airplane.
-        self.sun_np.setPos(px + SUN_DIR[0] * 400.0,
-                           py + SUN_DIR[1] * 400.0,
-                           pz + SUN_DIR[2] * 400.0)
 
     def _update_camera(self, dt):
         if self.camera is None:
@@ -1186,14 +1182,14 @@ class FlightSim(ShowBase):
         px, py, pz = sim_to_panda(self.fm.pos)
         h, p, r = sim_quat_to_hpr(self.fm.quat)
         plane_pos = np.array([px, py, pz])
+        # Forward vector in panda frame from heading/pitch.
+        hr, pr = math.radians(h), math.radians(p)
+        fx, fy, fz = (math.sin(hr) * math.cos(pr),
+                      math.cos(hr) * math.cos(pr), math.sin(pr))
+        back = np.array([fx, fy, fz])
         if self.cam_mode == 0:  # chase
             self.plane.show()
             # 16 m behind, 5 m above, in the plane's frame.
-            hr, pr = math.radians(h), math.radians(p)
-            # Forward vector in panda frame from heading/pitch.
-            fx, fy, fz = (math.sin(hr) * math.cos(pr),
-                          math.cos(hr) * math.cos(pr), math.sin(pr))
-            back = np.array([fx, fy, fz])
             target = plane_pos - back * 16.0 + np.array([0, 0, 5.0])
             cur = np.array(self.camera.getPos())
             smooth = cur + (target - cur) * min(1.0, dt * 4.0)
@@ -1203,9 +1199,16 @@ class FlightSim(ShowBase):
             self.plane.hide()
             self.camera.setPos(px, py + 0.9, pz + 1.55)
             self.camera.setHpr(h, p, r)
-        else:  # tower: from the control-tower cab, tracking the plane
+        elif self.cam_mode == 2:  # tower: from the control-tower cab
             self.plane.show()
             self.camera.setPos(200, -240, 38)
+            self.camera.lookAt(px, py, pz)
+        else:  # top-down: high above and slightly behind, looking down
+            self.plane.show()
+            target = plane_pos - back * 18.0 + np.array([0, 0, 55.0])
+            cur = np.array(self.camera.getPos())
+            smooth = cur + (target - cur) * min(1.0, dt * 3.0)
+            self.camera.setPos(*smooth)
             self.camera.lookAt(px, py, pz)
 
     def _update_hud(self):
