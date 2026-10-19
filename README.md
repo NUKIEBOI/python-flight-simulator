@@ -44,9 +44,9 @@ pip install -r requirements.txt
 ## Run
 
 ```bash
-python main.py            # launch the 3D simulator (needs a display)
-python main.py --test     # headless scripted takeoff, prints telemetry
-python tests/test_flight_model.py   # physics verification tests
+cd python-flight-simulator
+git pull
+python main.py
 ```
 
 ## Controls
