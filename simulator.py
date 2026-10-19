@@ -1058,21 +1058,33 @@ class FlightSim(ShowBase):
             self.accept(key, self._set_key, [name, True])
             self.accept(key + "-up", self._set_key, [name, False])
 
-        for key, name in [("arrow_up", "up"), ("arrow_down", "down"),
-                          ("arrow_left", "left"), ("arrow_right", "right"),
-                          ("w", "up"), ("s", "down"), ("a", "left"), ("d", "right"),
-                          ("q", "rud_l"), ("e", "rud_r"),
-                          ("shift", "thr_up"), ("control", "thr_dn")]:
+        held = [("arrow_up", "up"), ("arrow_down", "down"),
+                ("arrow_left", "left"), ("arrow_right", "right"),
+                ("w", "up"), ("s", "down"), ("a", "left"), ("d", "right"),
+                ("q", "rud_l"), ("e", "rud_r"),
+                ("shift", "thr_up"), ("control", "thr_dn")]
+        for key, name in held:
             bind(key, name)
+            # Holding Shift/Ctrl renames the other key events ("w" becomes
+            # "shift-w"), so the modified variants need bindings too.
+            # Otherwise the pilot can't steer while holding a throttle key.
+            if key not in ("shift", "control"):
+                bind("shift-" + key, name)
+                bind("control-" + key, name)
 
-        self.accept("f", self._cycle_flaps)
-        self.accept("t", self._trim_up)
-        self.accept("g", self._trim_down)
-        self.accept("b", self._toggle_brakes)
-        self.accept("c", self._cycle_camera)
-        self.accept("p", self._toggle_pause)
-        self.accept("r", self._reset)
-        self.accept("h", self._toggle_help)
+        def tap(key, fn):
+            self.accept(key, fn)
+            self.accept("shift-" + key, fn)
+            self.accept("control-" + key, fn)
+
+        tap("f", self._cycle_flaps)
+        tap("t", self._trim_up)
+        tap("g", self._trim_down)
+        tap("b", self._toggle_brakes)
+        tap("c", self._cycle_camera)
+        tap("p", self._toggle_pause)
+        tap("r", self._reset)
+        tap("h", self._toggle_help)
         self.accept("escape", base.userExit)
 
     def _set_key(self, name, held):
