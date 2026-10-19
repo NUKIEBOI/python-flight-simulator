@@ -72,6 +72,22 @@ python tests/test_flight_model.py   # physics verification tests
 **Takeoff:** hold `Shift` for full throttle, steer with `Q`/`E`,
 rotate at 55 kts (hold `W`), then tap `F` for the autopilot wing leveler.
 
+## Training sortie
+
+Every flight is a tasked mission, DCS-style: the gold objective tracker at the
+top of the screen walks you through it, and the tower talks to you on the
+radio (blue text).
+
+1. **Take off** from runway 27.
+2. **Fly 4 checkpoint gates** — glowing orange rings with beacon poles; the
+   next one pulses, cleared ones turn green.
+3. **Intercept the bandit drone** patrolling north-east — the tracker shows
+   bearing (left/right) and range; get within 220 m for the splash.
+4. **Land back on runway 27.** The tower grades your touchdown: *greased it*,
+   *firm*, *hard*, or *crash landing*, by sink rate.
+
+Press `R` any time to reset the flight and the mission.
+
 ## Architecture
 
 | File | What it does |

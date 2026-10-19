@@ -63,6 +63,24 @@ _SUN_TRAVEL = np.array([math.sin(math.radians(35)) * math.cos(math.radians(-50))
                         math.sin(math.radians(-50))])
 SUN_DIR = -_SUN_TRAVEL / np.linalg.norm(_SUN_TRAVEL)
 
+# ---------------------------------------------------------------------------
+# Training sortie (mission): take off -> 4 checkpoint gates -> intercept the
+# bandit drone -> land. Waypoints are in sim frame (x fwd, y right, z up).
+# ---------------------------------------------------------------------------
+MISSION_GATES = [
+    (1400.0, 900.0, 380.0),
+    (2600.0, -700.0, 480.0),
+    (900.0, -2400.0, 420.0),
+    (-1600.0, -900.0, 520.0),
+]
+GATE_RING_R = 42.0
+GATE_PASS_R = 62.0
+DRONE_CENTER = (1900.0, 1500.0)  # sim-frame x, y
+DRONE_RADIUS = 750.0
+DRONE_ALT = 480.0
+DRONE_SPEED = 55.0
+INTERCEPT_R = 220.0
+
 
 # ---------------------------------------------------------------------------
 # Procedural geometry helpers (no external assets)
@@ -256,6 +274,7 @@ CONTROLS
 
 Takeoff: full throttle (hold Shift), rotate at 55 kts (hold W).
 Tap F for the autopilot (holds wings level).
+Mission: take off, fly 4 gates, intercept the drone, land (R resets).
 """
 
 
@@ -611,6 +630,7 @@ class FlightSim(ShowBase):
         self.render.setFog(fog)
 
         self._build_airbase(rnd)
+        self._build_mission()
 
     def _build_airbase(self, rnd):
         """Military airbase: parallel taxiway, apron, control tower,
@@ -1142,10 +1162,193 @@ class FlightSim(ShowBase):
         else:
             self.help_text.hide()
 
+    # -- training sortie --------------------------------------------------
+    def _make_ring_node(self, name, r_in, r_out, segs=40):
+        """Glowing annulus in the local XZ plane (normal +/-Y)."""
+        fmt = GeomVertexFormat.getV3()
+        vdata = GeomVertexData(name, fmt, Geom.UHStatic)
+        vw = GeomVertexWriter(vdata, "vertex")
+        for i in range(segs + 1):
+            a = 2.0 * math.pi * i / segs
+            ca, sa = math.cos(a), math.sin(a)
+            vw.addData3(r_out * ca, 0.0, r_out * sa)
+            vw.addData3(r_in * ca, 0.0, r_in * sa)
+        tris = GeomTriangles(Geom.UHStatic)
+        for i in range(segs):
+            o0, i0 = 2 * i, 2 * i + 1
+            o1, i1 = 2 * i + 2, 2 * i + 3
+            tris.addVertices(o0, o1, i0)
+            tris.addVertices(i0, o1, i1)
+        geom = Geom(vdata)
+        geom.addPrimitive(tris)
+        node = GeomNode(name)
+        node.addGeom(geom)
+        return node
+
+    def _build_mission(self):
+        # Checkpoint gates: glowing rings, each facing the previous waypoint,
+        # plus a tall beacon pole so the next gate is findable from far away.
+        self.gate_nodes = []
+        prev = (-480.0, 0.0)
+        for idx, (gx, gy, gz) in enumerate(MISSION_GATES):
+            ring = self.render.attachNewNode(
+                self._make_ring_node(f"gate{idx}", GATE_RING_R - 6.0, GATE_RING_R))
+            ring.setColor(1.0, 0.45, 0.05, 1.0)
+            ring.setLightOff()
+            ring.setTwoSided(True)
+            px, py, pz = sim_to_panda((gx, gy, gz))
+            ring.setPos(px, py, pz)
+            ppx, ppy, _ppz = sim_to_panda((prev[0], prev[1], 0.0))
+            ring.setH(math.degrees(math.atan2(px - ppx, py - ppy)))
+            pole = self.render.attachNewNode(
+                make_box_node(f"gatepole{idx}", 2.5, 2.5, 150.0, (1.0, 0.45, 0.05)))
+            pole.setLightOff()
+            pole.setPos(px, py, pz + 95.0)
+            self.gate_nodes.append((ring, pole))
+            prev = (gx, gy)
+        # Bandit drone: simple target airframe, nose along panda +Y.
+        self.drone = self.render.attachNewNode("drone")
+        for name, size, pos, color in [
+                ("d_fus", (1.6, 7.0, 1.6), (0.0, 0.0, 0.0), (0.22, 0.22, 0.24)),
+                ("d_wing", (12.0, 1.8, 0.35), (0.0, 0.5, 0.2), (0.22, 0.22, 0.24)),
+                ("d_tail", (5.0, 1.2, 0.30), (0.0, -3.0, 0.5), (0.22, 0.22, 0.24)),
+                ("d_fin", (0.30, 1.2, 2.2), (0.0, -3.0, 1.4), (0.75, 0.15, 0.10)),
+                ("d_nose", (1.2, 1.2, 1.2), (0.0, 3.6, 0.0), (0.75, 0.15, 0.10))]:
+            part = self.drone.attachNewNode(make_box_node(name, *size, color))
+            part.setPos(*pos)
+        # HUD: objective tracker + radio messages.
+        self.hud_objective = OnscreenText(
+            text="", pos=(0.0, 0.815), scale=0.045,
+            fg=(1.0, 0.85, 0.30, 1.0), shadow=(0, 0, 0, 0.9),
+            align=TextNode.ACenter, mayChange=True)
+        self.radio_text = OnscreenText(
+            text="", pos=(0.0, -0.78), scale=0.045,
+            fg=(0.45, 0.90, 1.0, 1.0), shadow=(0, 0, 0, 0.9),
+            align=TextNode.ACenter, mayChange=True)
+        self._reset_mission()
+
+    def _reset_mission(self):
+        self.msn_phase = "takeoff"  # takeoff -> gates -> intercept -> land -> done
+        self.msn_gate = 0
+        self.msn_drone_angle = 0.6
+        self.msn_drone_alive = True
+        self.msn_landing = None
+        self.msn_radio_timer = 0.0
+        self._was_on_ground = True
+        self._vs_fpm = 0.0
+        self.drone.show()
+        for ring, pole in self.gate_nodes:
+            ring.setColor(1.0, 0.45, 0.05, 1.0)
+            ring.setScale(1.0)
+
+    def _radio(self, text, hold=7.0):
+        self.radio_text.setText(text)
+        self.msn_radio_timer = hold
+
+    def _update_mission(self, dt):
+        fm = self.fm
+        # Smooth vertical speed for landing-quality scoring.
+        R = quat_to_matrix(fm.quat)
+        vs = float((R @ fm.vel_b)[2]) * MS_TO_FPM
+        self._vs_fpm += (vs - self._vs_fpm) * min(1.0, 6.0 * dt)
+        # Touchdown -> landing quality callout.
+        if self._was_on_ground is False and fm.on_ground:
+            sink = -self._vs_fpm  # fpm, positive = descending
+            if sink < 200:
+                q = "GREASED IT"
+            elif sink < 450:
+                q = "FIRM LANDING"
+            elif sink < 700:
+                q = "HARD LANDING"
+            else:
+                q = "CRASH LANDING"
+            self.msn_landing = f"{q} ({sink:.0f} fpm)"
+            self._radio(f"TOWER: {q} - {sink:.0f} fpm.")
+        self._was_on_ground = fm.on_ground
+        # Bandit drone patrols its circle (sim frame).
+        if self.msn_drone_alive:
+            self.msn_drone_angle += (DRONE_SPEED / DRONE_RADIUS) * dt
+            a = self.msn_drone_angle
+            dpos = np.array([DRONE_CENTER[0] + DRONE_RADIUS * math.cos(a),
+                             DRONE_CENTER[1] + DRONE_RADIUS * math.sin(a),
+                             DRONE_ALT])
+            px, py, pz = sim_to_panda(dpos)
+            self.drone.setPos(px, py, pz)
+            vx, vy = -math.sin(a), math.cos(a)  # sim-frame velocity direction
+            self.drone.setH(math.degrees(math.atan2(vy, vx)))
+        # Radio message fade.
+        if self.msn_radio_timer > 0.0:
+            self.msn_radio_timer -= dt
+            if self.msn_radio_timer <= 0.0:
+                self.radio_text.setText("")
+        pos = fm.pos
+        # --- phase machine ---
+        if self.msn_phase == "takeoff":
+            if not fm.on_ground:
+                self.msn_phase = "gates"
+                self._radio("TOWER: Viper 1 airborne - proceed to checkpoint 1.")
+        elif self.msn_phase == "gates":
+            gx, gy, gz = MISSION_GATES[self.msn_gate]
+            d = float(np.linalg.norm(pos - np.array([gx, gy, gz])))
+            if d < GATE_PASS_R:
+                self.msn_gate += 1
+                ring, _pole = self.gate_nodes[self.msn_gate - 1]
+                ring.setColor(0.25, 1.0, 0.35, 1.0)  # cleared -> green
+                if self.msn_gate >= len(MISSION_GATES):
+                    self.msn_phase = "intercept"
+                    self._radio("BULLSEYE: All gates - bandit drone active NE. Intercept!")
+                else:
+                    self._radio(f"BULLSEYE: Gate {self.msn_gate} - good hit.")
+        elif self.msn_phase == "intercept":
+            a = self.msn_drone_angle
+            drone = np.array([DRONE_CENTER[0] + DRONE_RADIUS * math.cos(a),
+                              DRONE_CENTER[1] + DRONE_RADIUS * math.sin(a),
+                              DRONE_ALT])
+            if float(np.linalg.norm(pos - drone)) < INTERCEPT_R:
+                self.msn_drone_alive = False
+                self.drone.hide()
+                self.msn_phase = "land"
+                self._radio("SPLASH! Bandit down. RTB - land runway 27.")
+        elif self.msn_phase == "land":
+            kts = fm.airspeed() * MS_TO_KTS
+            if fm.on_ground and abs(pos[1]) < 30.0 and -640.0 < pos[0] < 640.0 \
+                    and kts < 25.0:
+                self.msn_phase = "done"
+                self._radio("TOWER: Welcome back, Viper 1. Mission complete.")
+        # Pulse the next gate so it stands out.
+        if self.msn_phase == "gates":
+            ring, _pole = self.gate_nodes[self.msn_gate]
+            ring.setScale(1.0 + 0.07 * math.sin(fm.time * 4.0))
+        # Objective tracker text.
+        _pitch, _roll, yaw = fm.attitude_euler()
+        if self.msn_phase == "takeoff":
+            obj = "OBJ: TAKE OFF - RWY 27"
+        elif self.msn_phase == "gates":
+            gx, gy, gz = MISSION_GATES[self.msn_gate]
+            d = float(np.linalg.norm(pos - np.array([gx, gy, gz])))
+            obj = f"OBJ: GATE {self.msn_gate + 1}/{len(MISSION_GATES)} - {d / 1000.0:.1f} KM"
+        elif self.msn_phase == "intercept":
+            a = self.msn_drone_angle
+            drone = np.array([DRONE_CENTER[0] + DRONE_RADIUS * math.cos(a),
+                              DRONE_CENTER[1] + DRONE_RADIUS * math.sin(a),
+                              DRONE_ALT])
+            delta = drone - pos
+            d = float(np.linalg.norm(delta))
+            rel = (math.degrees(math.atan2(delta[1], delta[0])) - yaw * DEG) % 360.0
+            side = "R" if rel <= 180.0 else "L"
+            mag = rel if rel <= 180.0 else 360.0 - rel
+            obj = f"OBJ: INTERCEPT DRONE - {mag:03.0f}{side} / {d / 1000.0:.1f} KM"
+        elif self.msn_phase == "land":
+            obj = "OBJ: LAND - RWY 27"
+        else:
+            obj = "MISSION COMPLETE - press R to fly again"
+        self.hud_objective.setText(obj)
+
     def _reset(self):
         self.fm.reset()
         self.fm.pos = np.array([-480.0, 0.0, GEAR_HEIGHT])
         self.ctrl.reset()
+        self._reset_mission()
 
     # -- per-frame update -------------------------------------------------
     def _update_controls_from_keys(self, dt):
@@ -1179,6 +1382,7 @@ class FlightSim(ShowBase):
             if self.ap_enabled:
                 self._update_autopilot(dt)
             self.fm.step(dt, self.ctrl)
+            self._update_mission(dt)
             self.prop_angle = (self.prop_angle
                                + (4.0 + 38.0 * self.ctrl.throttle) * dt)
             self.prop.setR(math.degrees(self.prop_angle) % 360.0)
