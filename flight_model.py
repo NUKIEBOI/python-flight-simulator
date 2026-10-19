@@ -239,9 +239,19 @@ class FlightModel:
         # --- Moments ---
         p, qrate, r = self.omega
         v_damp = max(V, 2.0)  # keep damping derivatives finite at low speed
+        # Near/fully stalled wing -> the tail flies in separated, turbulent
+        # flow, so the elevator progressively loses authority. Without this,
+        # full back-elevator could pin the nose in a deep stall forever;
+        # now the nose drops and the wing recovers, like the real thing.
+        _a_onset = ac.alpha_crit * 0.85
+        if abs(alpha) > _a_onset and V > 5.0:
+            _depth = min(1.0, (abs(alpha) - _a_onset) / 0.15)
+            elev_auth = 1.0 - 0.65 * _depth
+        else:
+            elev_auth = 1.0
         Cm = (ac.Cm0 + ac.Cma * alpha
               + ac.Cmq * (qrate * cbar / (2 * v_damp))
-              + ac.Cmde * de)
+              + ac.Cmde * de * elev_auth)
         Cl = (ac.Clb * beta
               + ac.Clp * (p * b / (2 * v_damp))
               + ac.Clda * da + ac.Cldr * dr)
@@ -287,10 +297,13 @@ class FlightModel:
             # Nosewheel steering from rudder + yaw damping on the ground.
             pitch, roll, _yaw = self._euler_from_R(R)
             M[2] += dr * weight_on_wheels * 1.5 - r * 3000.0
-            # Pitch spring toward a slight nose-up taxi attitude; the pilot
-            # overcomes it with elevator to rotate. (Positive M_y = nose-down,
-            # so the restoring moment carries a + sign.)
-            M[1] += (pitch - 0.02) * ac.mass * G * 0.6 - qrate * 3000.0
+            # Pitch attitude on the ground is held by the gear geometry: a
+            # stiff spring toward a slight nose-up taxi attitude. The pilot
+            # overcomes it with elevator to rotate - but only once there is
+            # enough airflow (around 55 kts), so the nose can't be hauled
+            # skyward mid-roll into a premature stall/mush. (Positive M_y =
+            # nose-down, so the restoring moment carries a + sign.)
+            M[1] += (pitch - 0.02) * ac.mass * G * 2.5 - qrate * 3000.0
             # Gear holds the wings level.
             M[0] += -roll * ac.mass * G * 1.0 - p * 4000.0
 
