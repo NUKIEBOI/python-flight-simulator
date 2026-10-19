@@ -8,6 +8,12 @@ Coordinate conversion: the physics uses x-forward / y-right / z-up while
 Panda3D uses x-right / y-forward / z-up. sim_to_panda() maps positions, and
 the plane's orientation is set with setHpr() from heading/pitch/roll angles
 extracted in Panda's convention (derived in comments below).
+
+All scenery is procedural (no downloaded assets): textured terrain with field
+patchwork, a marked runway with designation numbers, gradient sky dome with
+sun glow, drifting clouds, trees, hangars, windsock, runway edge lights, and
+a refined Cessna model with spinning prop blur, wing struts, gear fairings,
+and navigation lights. Real-time shadows follow the airplane.
 """
 
 import math
@@ -20,6 +26,7 @@ from direct.showbase.ShowBase import ShowBase
 from direct.gui.OnscreenText import OnscreenText
 from panda3d.core import (
     AmbientLight,
+    AntialiasAttrib,
     CardMaker,
     ClockObject,
     DirectionalLight,
@@ -34,6 +41,7 @@ from panda3d.core import (
     PNMImage,
     TextNode,
     Texture,
+    TransparencyAttrib,
     Vec4,
     loadPrcFileData,
 )
@@ -47,6 +55,13 @@ DEG = 180.0 / math.pi
 MS_TO_KTS = 1.94384
 M_TO_FT = 3.28084
 MS_TO_FPM = 196.85
+
+# Sun travel direction in Panda coords, derived from the light's Hpr(35,-50,0)
+# (see _build_world). SUN_DIR points from the scene toward the sun.
+_SUN_TRAVEL = np.array([math.sin(math.radians(35)) * math.cos(math.radians(-50)),
+                        math.cos(math.radians(35)) * math.cos(math.radians(-50)),
+                        math.sin(math.radians(-50))])
+SUN_DIR = -_SUN_TRAVEL / np.linalg.norm(_SUN_TRAVEL)
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +89,87 @@ def make_box_node(name, sx, sy, sz, color):
                        (2, 6, 7, 3), (0, 3, 7, 4), (1, 5, 6, 2)]:
         tris.addVertices(a, b, c)
         tris.addVertices(a, c, d)
+    geom = Geom(vdata)
+    geom.addPrimitive(tris)
+    node = GeomNode(name)
+    node.addGeom(geom)
+    return node
+
+
+def make_cone_node(name, r_base, height, color, segments=10):
+    """Cone with its base ring at z=0 and apex at z=height."""
+    fmt = GeomVertexFormat.getV3c4()
+    vdata = GeomVertexData(name, fmt, Geom.UHStatic)
+    vw = GeomVertexWriter(vdata, "vertex")
+    cw = GeomVertexWriter(vdata, "color")
+    vw.addData3(0, 0, 0)
+    cw.addData4(*color, 1.0)
+    for i in range(segments):
+        a = 2.0 * math.pi * i / segments
+        vw.addData3(r_base * math.cos(a), r_base * math.sin(a), 0)
+        cw.addData4(*color, 1.0)
+    vw.addData3(0, 0, height)
+    cw.addData4(*color, 1.0)
+    apex = segments + 1
+    tris = GeomTriangles(Geom.UHStatic)
+    for i in range(segments):
+        a, b = 1 + i, 1 + (i + 1) % segments
+        tris.addVertices(0, b, a)      # base fan
+        tris.addVertices(a, b, apex)   # side
+    geom = Geom(vdata)
+    geom.addPrimitive(tris)
+    node = GeomNode(name)
+    node.addGeom(geom)
+    return node
+
+
+def make_disc_node(name, radius, segments=40):
+    """Flat UV-mapped disc in the X-Z plane (normal +/-Y), for prop blur."""
+    fmt = GeomVertexFormat.getV3t2()
+    vdata = GeomVertexData(name, fmt, Geom.UHStatic)
+    vw = GeomVertexWriter(vdata, "vertex")
+    uw = GeomVertexWriter(vdata, "texcoord")
+    vw.addData3(0, 0, 0)
+    uw.addData2(0.5, 0.5)
+    for i in range(segments):
+        a = 2.0 * math.pi * i / segments
+        x, z = radius * math.cos(a), radius * math.sin(a)
+        vw.addData3(x, 0, z)
+        uw.addData2(0.5 + 0.5 * math.cos(a), 0.5 + 0.5 * math.sin(a))
+    tris = GeomTriangles(Geom.UHStatic)
+    for i in range(segments):
+        tris.addVertices(0, 1 + i, 1 + (i + 1) % segments)
+    geom = Geom(vdata)
+    geom.addPrimitive(tris)
+    node = GeomNode(name)
+    node.addGeom(geom)
+    return node
+
+
+def make_sphere_node(name, radius, sectors=28, rings=14):
+    """UV-mapped sphere (equirect-ish: v=1 at the top), viewed from inside."""
+    fmt = GeomVertexFormat.getV3t2()
+    vdata = GeomVertexData(name, fmt, Geom.UHStatic)
+    vw = GeomVertexWriter(vdata, "vertex")
+    uw = GeomVertexWriter(vdata, "texcoord")
+    for r in range(rings + 1):
+        phi = math.pi * r / rings
+        for s in range(sectors + 1):
+            theta = 2.0 * math.pi * s / sectors
+            x = radius * math.sin(phi) * math.cos(theta)
+            y = radius * math.sin(phi) * math.sin(theta)
+            z = radius * math.cos(phi)
+            vw.addData3(x, y, z)
+            uw.addData2(s / sectors, 1.0 - r / rings)
+    tris = GeomTriangles(Geom.UHStatic)
+    for r in range(rings):
+        for s in range(sectors):
+            a = r * (sectors + 1) + s
+            b = a + 1
+            c = a + sectors + 1
+            d = c + 1
+            tris.addVertices(a, c, b)
+            tris.addVertices(b, c, d)
     geom = Geom(vdata)
     geom.addPrimitive(tris)
     node = GeomNode(name)
@@ -140,6 +236,8 @@ class FlightSim(ShowBase):
     def __init__(self):
         super().__init__()
         self.disableMouse()
+        self.render.setAntialias(AntialiasAttrib.MMultisample)
+        self.render.setShaderAuto()  # per-pixel lighting + shadows
 
         self.ac = Cessna172()
         self.fm = FlightModel(self.ac)
@@ -148,6 +246,7 @@ class FlightSim(ShowBase):
         self.cam_mode = 0  # 0 chase, 1 cockpit, 2 tower
         self.prop_angle = 0.0
         self.keys = {}
+        self.clouds = []
 
         self._build_world()
         self._build_airplane()
@@ -156,208 +255,538 @@ class FlightSim(ShowBase):
 
         self.taskMgr.add(self._update, "sim-update")
 
-    # -- world ------------------------------------------------------------
-    def _make_ground_texture(self, size=1024, world=4000.0):
-        """Procedural terrain: grass with variation + a runway along x."""
-        rnd = random.Random(42)  # deterministic
-        img = PNMImage(size, size)
-        for j in range(size):
-            for i in range(size):
-                # Large soft patches via sines + fine per-pixel noise.
-                patch = (math.sin(i * 0.021) * math.sin(j * 0.017)
-                         + 0.5 * math.sin(i * 0.053 + 1.7) * math.sin(j * 0.047 + 0.6))
-                n = rnd.uniform(-0.035, 0.035)
-                g = 0.42 + 0.10 * patch + n
-                img.setXel(i, j, 0.30 + 0.6 * n, g, 0.24 + 0.5 * n)
-        # Runway: world x in [-600, 600], y in [-10, 10], drawn in asphalt.
-        def to_px(x):
-            return int((x + world / 2) / world * (size - 1))
-        rx0, rx1 = to_px(-600), to_px(600)
-        ry0, ry1 = to_px(-10), to_px(10)
-        for j in range(ry0, ry1 + 1):
-            for i in range(rx0, rx1 + 1):
-                img.setXel(i, j, 0.26, 0.26, 0.28)
-        # Edge lines.
-        for j in (ry0 + 1, ry1 - 1):
-            for i in range(rx0, rx1 + 1):
-                img.setXel(i, j, 0.9, 0.9, 0.9)
-        # Centerline dashes: 30 m dashes every 60 m.
-        yc = to_px(0)
-        x = -585.0
-        while x < 585.0:
-            for k in range(int(30 / world * size)):
-                i = to_px(x) + k
-                if rx0 <= i <= rx1:
-                    for dj in (-1, 0, 1):
-                        img.setXel(i, yc + dj, 0.92, 0.92, 0.92)
-            x += 60.0
-        # Threshold bars at both ends (8 bars each).
-        for end_x in (-585.0, 555.0):
-            for bar in range(8):
-                y = -7.5 + bar * 2.15
-                for k in range(int(25 / world * size)):
-                    i = to_px(end_x) + k
-                    for dj in range(int(1.2 / world * size) + 1):
-                        j = to_px(y) + dj
-                        if rx0 <= i <= rx1 and ry0 <= j <= ry1:
-                            img.setXel(i, j, 0.92, 0.92, 0.92)
-        tex = Texture("ground")
+    # -- procedural textures ------------------------------------------------
+    @staticmethod
+    def _tex_from_image(img, name):
+        tex = Texture(name)
         tex.load(img)
         return tex
 
+    def _make_ground_texture(self, size=1024, world=4000.0):
+        """Terrain: patchwork fields with hedgerows, noise, and two roads."""
+        rnd = random.Random(42)  # deterministic
+        img = PNMImage(size, size)
+        # Base meadow.
+        for j in range(size):
+            for i in range(size):
+                n = rnd.uniform(-0.03, 0.03)
+                img.setXel(i, j, 0.30 + 0.5 * n, 0.44 + 0.6 * n, 0.24 + 0.4 * n)
+        # Field patchwork: large soft rectangles in varied greens/tans.
+        for _ in range(70):
+            w = rnd.uniform(120, 420)
+            h = rnd.uniform(120, 420)
+            x0 = rnd.uniform(-world / 2, world / 2 - w)
+            y0 = rnd.uniform(-world / 2, world / 2 - h)
+            tone = rnd.random()
+            if tone < 0.55:
+                col = (rnd.uniform(0.24, 0.34), rnd.uniform(0.42, 0.55),
+                       rnd.uniform(0.20, 0.28))
+            elif tone < 0.8:
+                col = (rnd.uniform(0.45, 0.58), rnd.uniform(0.42, 0.50),
+                       rnd.uniform(0.25, 0.32))
+            else:
+                col = (rnd.uniform(0.35, 0.45), rnd.uniform(0.38, 0.46),
+                       rnd.uniform(0.22, 0.28))
+            i0 = int((x0 + world / 2) / world * (size - 1))
+            i1 = int((x0 + w + world / 2) / world * (size - 1))
+            j0 = int((y0 + world / 2) / world * (size - 1))
+            j1 = int((y0 + h + world / 2) / world * (size - 1))
+            for j in range(max(0, j0), min(size, j1 + 1)):
+                for i in range(max(0, i0), min(size, i1 + 1)):
+                    edge = (j in (j0, j1) or i in (i0, i1))
+                    if edge:
+                        img.setXel(i, j, col[0] * 0.55, col[1] * 0.55,
+                                   col[2] * 0.55)
+                    else:
+                        n = rnd.uniform(-0.02, 0.02)
+                        img.setXel(i, j, col[0] + n, col[1] + n, col[2] + n)
+        # Roads (image coords; orientation is cosmetic here).
+        for j in range(size):
+            for i in range(int(0.72 * size), int(0.728 * size)):
+                img.setXel(i, j, 0.33, 0.33, 0.34)
+        for j in range(int(0.30 * size), int(0.308 * size)):
+            for i in range(size):
+                img.setXel(i, j, 0.33, 0.33, 0.34)
+        return self._tex_from_image(img, "ground")
+
+    def _make_runway_texture(self):
+        """Crisp runway: asphalt, edge lines, centerline, thresholds,
+        touchdown zones, and designation numbers. Runway runs along +Y."""
+        W, H = 128, 2048
+        RW_W, RW_L = 24.0, 1240.0  # meters
+        rnd = random.Random(7)
+        img = PNMImage(W, H)
+
+        def mx(x):
+            return int((x + RW_W / 2) / RW_W * (W - 1))
+
+        def my(y):
+            # Image top (j=0) maps to v=1 = far/north end (+Y).
+            return int((RW_L / 2 - y) / RW_L * (H - 1))
+
+        white = (0.90, 0.90, 0.90)
+        for j in range(H):
+            for i in range(W):
+                n = rnd.uniform(-0.022, 0.022)
+                img.setXel(i, j, 0.25 + n, 0.25 + n, 0.27 + n)
+
+        def hline(y0_m, y1_m, x0_m, x1_m, col=white):
+            for j in range(my(y1_m), my(y0_m) + 1):
+                for i in range(mx(x0_m), mx(x1_m) + 1):
+                    if 0 <= i < W and 0 <= j < H:
+                        img.setXel(i, j, *col)
+
+        # Edge lines.
+        hline(-600, 600, 10.4, 11.1)
+        hline(-600, 600, -11.1, -10.4)
+        # Centerline dashes: 30 m dash, 30 m gap.
+        y = -585.0
+        while y < 585.0:
+            hline(y, y + 30.0, -0.45, 0.45)
+            y += 60.0
+        # Threshold piano keys at both ends (8 bars).
+        for end in (-1, 1):
+            y_base = end * 606.0
+            for bar in range(8):
+                x = -9.6 + bar * 2.75
+                hline(min(y_base, y_base - end * 18.0),
+                      max(y_base, y_base - end * 18.0), x, x + 1.7)
+        # Touchdown zone pairs.
+        for end in (-1, 1):
+            for d in (150.0, 300.0, 450.0):
+                yc = end * (606.0 - d)
+                hline(yc - 6.0, yc + 6.0, 5.4, 7.0)
+                hline(yc - 6.0, yc + 6.0, -7.0, -5.4)
+
+        # Designation numbers, 3x5 blocky font.
+        font = {"0": ["111", "101", "101", "101", "111"],
+                "2": ["111", "001", "111", "100", "111"],
+                "7": ["111", "001", "010", "010", "010"],
+                "9": ["111", "101", "111", "001", "111"]}
+
+        def draw_number(text, y_center_m, rot180):
+            cell = 8
+            total_w = len(text) * 4 * cell - cell
+            top = my(y_center_m) - (5 * cell) // 2
+            cx = W // 2 - total_w // 2
+            for di, ch in enumerate(text):
+                for r in range(5):
+                    for c in range(3):
+                        if font[ch][r][c] == "1":
+                            rr, cc = (4 - r, 2 - c) if rot180 else (r, c)
+                            for dj in range(cell):
+                                for di2 in range(cell):
+                                    i = cx + di * 4 * cell + cc * cell + di2
+                                    j = top + rr * cell + dj
+                                    if 0 <= i < W and 0 <= j < H:
+                                        img.setXel(i, j, *white)
+
+        # "27" at the south end reads for a northbound takeoff;
+        # "09" at the north end reads for a southbound one.
+        draw_number("27", -520.0, rot180=False)
+        draw_number("09", 520.0, rot180=True)
+        return self._tex_from_image(img, "runway")
+
+    def _make_sky_texture(self):
+        """Vertical gradient: deep zenith blue -> warm horizon haze."""
+        img = PNMImage(8, 256)
+        for j in range(256):
+            t = j / 255.0  # 0 = image top = zenith
+            if t < 0.5:
+                k = t / 0.5
+                r = 0.10 + (0.83 - 0.10) * k
+                g = 0.30 + (0.87 - 0.30) * k
+                b = 0.70 + (0.91 - 0.70) * k
+            else:
+                k = (t - 0.5) / 0.5
+                r = 0.83 + (0.32 - 0.83) * k
+                g = 0.87 + (0.36 - 0.87) * k
+                b = 0.91 + (0.40 - 0.91) * k
+            for i in range(8):
+                img.setXel(i, j, r, g, b)
+        return self._tex_from_image(img, "sky")
+
+    def _make_glow_texture(self, size=96):
+        """Soft radial glow (white core -> transparent), for sun and lights."""
+        img = PNMImage(size, size, 4)
+        for j in range(size):
+            for i in range(size):
+                dx = (i / (size - 1)) * 2.0 - 1.0
+                dy = (j / (size - 1)) * 2.0 - 1.0
+                d = math.sqrt(dx * dx + dy * dy)
+                a = max(0.0, 1.0 - d) ** 2.2
+                img.setXel(i, j, 1.0, 1.0, 1.0)
+                img.setAlpha(i, j, a)
+        return self._tex_from_image(img, "glow")
+
+    def _make_cloud_texture(self, size=128):
+        """Puffy cloud puff from composited radial blobs."""
+        rnd = random.Random(1234)
+        img = PNMImage(size, size, 4)
+        blobs = [(rnd.uniform(0.25, 0.75), rnd.uniform(0.35, 0.65),
+                  rnd.uniform(0.15, 0.30)) for _ in range(9)]
+        for j in range(size):
+            for i in range(size):
+                x, y = i / size, j / size
+                a = 0.0
+                for bx, by, br in blobs:
+                    d2 = ((x - bx) ** 2 + (y - by) ** 2) / (br * br)
+                    if d2 < 4.0:
+                        a += math.exp(-d2 * 1.6) * 0.75
+                a = min(1.0, a)
+                # Slightly darker base for depth.
+                shade = 0.92 + 0.08 * (1.0 - min(1.0, a))
+                img.setXel(i, j, shade, shade, 1.0)
+                img.setAlpha(i, j, min(1.0, a * 1.15))
+        return self._tex_from_image(img, "cloud")
+
+    def _make_prop_texture(self, size=128):
+        """Translucent prop-blur disc: faint hub, stronger rim."""
+        img = PNMImage(size, size, 4)
+        for j in range(size):
+            for i in range(size):
+                dx = (i / (size - 1)) * 2.0 - 1.0
+                dy = (j / (size - 1)) * 2.0 - 1.0
+                d = math.sqrt(dx * dx + dy * dy)
+                if d > 1.0:
+                    a = 0.0
+                else:
+                    a = 0.10 + 0.30 * (d ** 2)
+                img.setXel(i, j, 0.82, 0.82, 0.86)
+                img.setAlpha(i, j, a)
+        return self._tex_from_image(img, "propblur")
+
+    # -- world ------------------------------------------------------------
     def _build_world(self):
-        # Ground.
+        # Ground with field patchwork.
         cm = CardMaker("ground")
         cm.setFrame(-2000, 2000, -2000, 2000)
         ground = self.render.attachNewNode(cm.generate())
         ground.setTexture(self._make_ground_texture())
         ground.setPos(0, 0, -0.05)
 
-        # Gradient sky: big box with a vertical gradient texture, fog off.
-        sky_img = PNMImage(4, 256)
-        for j in range(256):
-            t = j / 255.0  # 0 bottom -> 1 top
-            r = 0.78 + (0.20 - 0.78) * t
-            g = 0.84 + (0.45 - 0.84) * t
-            b = 0.90 + (0.95 - 0.90) * t
-            for i in range(4):
-                sky_img.setXel(i, j, r, g, b)
-        sky_tex = Texture("sky")
-        sky_tex.load(sky_img)
-        sky = self.render.attachNewNode(make_box_node("sky", 9000, 9000, 9000,
-                                                       (1, 1, 1)))
-        sky.setTexture(sky_tex)
+        # Runway as its own card (crisp markings), along the takeoff axis.
+        rcm = CardMaker("runway")
+        rcm.setFrame(-12, 12, -620, 620)
+        runway = self.render.attachNewNode(rcm.generate())
+        runway.setTexture(self._make_runway_texture())
+        runway.setPos(0, 0, 0.06)
+
+        # Sky dome: gradient sphere, unlit, drawn behind everything.
+        sky = self.render.attachNewNode(make_sphere_node("sky", 8000.0))
+        sky.setTexture(self._make_sky_texture())
         sky.setTwoSided(True)
+        sky.setLightOff()
         sky.setFogOff()
         sky.setDepthWrite(False)
         sky.setBin("background", -10)
-        sky.setPos(0, 0, 0)
 
-        # Lighting: warm sun + sky ambient.
+        # Sun glow sprite, repositioned every frame relative to the camera.
+        glow_tex = self._make_glow_texture()
+        self.glow_tex = glow_tex
+        scm = CardMaker("sun")
+        scm.setFrame(-650, 650, -650, 650)
+        self.sun_card = self.render.attachNewNode(scm.generate())
+        self.sun_card.setTexture(glow_tex)
+        self.sun_card.setColor(1.0, 0.93, 0.80, 1.0)
+        self.sun_card.setBillboardPointEye()
+        self.sun_card.setTransparency(TransparencyAttrib.MAlpha)
+        self.sun_card.setLightOff()
+        self.sun_card.setFogOff()
+        self.sun_card.setDepthWrite(False)
+        self.sun_card.setBin("background", -5)
+
+        # Drifting clouds.
+        cloud_tex = self._make_cloud_texture()
+        rnd = random.Random(99)
+        for _ in range(14):
+            ccm = CardMaker("cloud")
+            w = rnd.uniform(380, 750)
+            ccm.setFrame(-w / 2, w / 2, -w / 3.2, w / 3.2)
+            c = self.render.attachNewNode(ccm.generate())
+            c.setTexture(cloud_tex)
+            c.setTransparency(TransparencyAttrib.MAlpha)
+            c.setLightOff()
+            c.setBillboardPointEye()
+            ang = rnd.uniform(0, 2 * math.pi)
+            rad = rnd.uniform(600, 2700)
+            c.setPos(rad * math.cos(ang), rad * math.sin(ang),
+                     rnd.uniform(380, 680))
+            c.setDepthWrite(False)
+            self.clouds.append((c, rnd.uniform(2.0, 5.0)))
+
+        # Lighting: warm sun with shadows + cool sky fill.
         sun = DirectionalLight("sun")
-        sun.setColor(Vec4(1.0, 0.96, 0.88, 1.0))
-        sun_np = self.render.attachNewNode(sun)
-        sun_np.setHpr(35, -50, 0)
-        self.render.setLight(sun_np)
+        sun.setColor(Vec4(1.0, 0.94, 0.82, 1.0))
+        sun.setShadowCaster(True, 2048, 2048)
+        self.sun_np = self.render.attachNewNode(sun)
+        self.sun_np.setHpr(35, -50, 0)
+        lens = self.sun_np.node().getLens()
+        lens.setFilmSize(320, 320)
+        lens.setNearFar(1, 1200)
+        self.render.setLight(self.sun_np)
         amb = AmbientLight("amb")
-        amb.setColor(Vec4(0.55, 0.60, 0.68, 1.0))
+        amb.setColor(Vec4(0.42, 0.47, 0.58, 1.0))
         self.render.setLight(self.render.attachNewNode(amb))
 
         # Distance haze.
         fog = Fog("haze")
-        fog.setColor(0.78, 0.83, 0.89)
-        fog.setExpDensity(0.00045)
+        fog.setColor(0.80, 0.84, 0.89)
+        fog.setExpDensity(0.00040)
         self.render.setFog(fog)
+
+        self._build_airport(rnd)
+
+    def _build_airport(self, rnd):
+        """Hangars, windsock, trees, and runway edge lights."""
+        gray = (0.62, 0.63, 0.66)
+        dark_gray = (0.38, 0.39, 0.42)
+        # Two hangars east of the runway.
+        for hx, hy in ((150, -80), (150, 70)):
+            walls = NodePath(make_box_node("hangar", 30, 20, 9, gray))
+            walls.setPos(hx, hy, 4.5)
+            walls.reparentTo(self.render)
+            roof = NodePath(make_box_node("roof", 33, 23, 1.2, dark_gray))
+            roof.setPos(hx, hy, 9.6)
+            roof.reparentTo(self.render)
+            door = NodePath(make_box_node("door", 20, 0.4, 7, (0.16, 0.17, 0.20)))
+            door.setPos(hx - 15.1, hy, 3.5)
+            door.reparentTo(self.render)
+
+        # Windsock near the south end.
+        pole = NodePath(make_box_node("pole", 0.18, 0.18, 6.5, (0.75, 0.75, 0.78)))
+        pole.setPos(28, -560, 3.25)
+        pole.reparentTo(self.render)
+        self.sock_pivot = self.render.attachNewNode("sock_pivot")
+        self.sock_pivot.setPos(28, -560, 6.4)
+        # Tapered sock: wide end into the wind, built along +Y.
+        fmt = GeomVertexFormat.getV3c4()
+        vdata = GeomVertexData("sock", fmt, Geom.UHStatic)
+        vw = GeomVertexWriter(vdata, "vertex")
+        cw = GeomVertexWriter(vdata, "color")
+        segs, sock_len = 10, 2.6
+        for ring, (yy, rr) in enumerate(((0.0, 0.50), (sock_len, 0.16))):
+            for i in range(segs):
+                a = 2.0 * math.pi * i / segs
+                vw.addData3(rr * math.cos(a), yy, rr * math.sin(a))
+                # Alternate orange / white bands along the length.
+                cw.addData4(0.95, 0.45, 0.10, 1.0) if ring == 0 else \
+                    cw.addData4(0.94, 0.94, 0.94, 1.0)
+        tris = GeomTriangles(Geom.UHStatic)
+        for i in range(segs):
+            a, b = i, (i + 1) % segs
+            c, d = segs + i, segs + (i + 1) % segs
+            tris.addVertices(a, c, b)
+            tris.addVertices(b, c, d)
+        geom = Geom(vdata)
+        geom.addPrimitive(tris)
+        sock = NodePath(GeomNode("sock"))
+        sock.node().addGeom(geom)
+        sock.setTwoSided(True)
+        sock.reparentTo(self.sock_pivot)
+
+        # Trees: pines scattered clear of the runway corridor and airport.
+        trunk_c = (0.30, 0.22, 0.15)
+        leaf_c = [(0.16, 0.34, 0.16), (0.20, 0.40, 0.18)]
+        placed = 0
+        while placed < 60:
+            x = rnd.uniform(-1900, 1900)
+            y = rnd.uniform(-1900, 1900)
+            if abs(x) < 55 and abs(y) < 700:
+                continue
+            if math.hypot(x - 150, y) < 120:
+                continue
+            if math.hypot(x, y) < 230:
+                continue
+            s = rnd.uniform(0.8, 1.7)
+            trunk = NodePath(make_box_node("trunk", 0.5 * s, 0.5 * s,
+                                           2.2 * s, trunk_c))
+            trunk.setPos(x, y, 1.1 * s)
+            trunk.reparentTo(self.render)
+            lc = leaf_c[placed % 2]
+            for k, (rr, hh, zz) in enumerate(((2.6, 4.2, 2.0),
+                                             (1.8, 3.0, 4.6))):
+                cone = NodePath(make_cone_node("pine", rr * s, hh * s, lc))
+                cone.setPos(x, y, zz * s)
+                cone.reparentTo(self.render)
+            placed += 1
+
+        # Runway edge lights: small posts with a warm glow.
+        for y in range(-600, 601, 60):
+            for x in (-13.5, 13.5):
+                post = NodePath(make_box_node("elpost", 0.14, 0.14, 0.9,
+                                              (0.2, 0.2, 0.22)))
+                post.setPos(x, y, 0.45)
+                post.reparentTo(self.render)
+                lcm = CardMaker("elglow")
+                lcm.setFrame(-0.8, 0.8, -0.8, 0.8)
+                g = self.render.attachNewNode(lcm.generate())
+                g.setTexture(self.glow_tex)
+                g.setColor(1.0, 0.85, 0.55, 0.85)
+                g.setBillboardPointEye()
+                g.setTransparency(TransparencyAttrib.MAlpha)
+                g.setLightOff()
+                g.setDepthWrite(False)
+                g.setPos(x, y, 1.1)
 
     # -- airplane ---------------------------------------------------------
     def _build_airplane(self):
-        """Low-poly C172-ish model from boxes (sim frame: x fwd, y right)."""
-        white = (0.92, 0.92, 0.94)
-        red = (0.75, 0.12, 0.12)
-        dark = (0.12, 0.13, 0.16)
-        glass = (0.15, 0.22, 0.30)
+        """Refined C172-ish model (panda axes: x span, y length, z up)."""
+        white = (0.93, 0.93, 0.95)
+        red = (0.72, 0.10, 0.10)
+        dark = (0.10, 0.11, 0.14)
+        glass_c = (0.13, 0.19, 0.28)
 
         self.plane = self.render.attachNewNode("plane")
 
-        # Parts below are dimensioned directly in PANDA axes
-        # (x right = span, y forward = length, z up) to avoid a frame flip.
         parts = [
-            ("fuselage", 1.15, 8.4, 1.35, white, (0, 0.4, 0.15)),
-            ("stripe", 1.17, 8.0, 0.22, red, (0, 0.35, -0.25)),
-            ("cabin", 1.0, 2.0, 0.75, glass, (0, 1.1, 0.95)),
-            ("wing", 11.0, 1.55, 0.14, white, (0, 0.6, 1.05)),
-            ("wingtip_l", 0.5, 0.4, 0.16, red, (-5.4, 0.6, 1.05)),
-            ("wingtip_r", 0.5, 0.4, 0.16, red, (5.4, 0.6, 1.05)),
-            ("hstab", 3.4, 1.05, 0.10, white, (0, -3.55, 0.35)),
-            ("fin", 0.12, 1.05, 1.7, red, (0, -3.55, 1.05)),
-            ("gear_l", 0.35, 0.55, 0.55, dark, (-0.85, 1.6, -0.75)),
-            ("gear_r", 0.35, 0.55, 0.55, dark, (0.85, 1.6, -0.75)),
-            ("gear_n", 0.30, 0.45, 0.50, dark, (0, 3.1, -0.72)),
-            ("strut_l", 0.12, 0.12, 0.8, dark, (-0.85, 1.6, -0.25)),
-            ("strut_r", 0.12, 0.12, 0.8, dark, (0.85, 1.6, -0.25)),
-            ("strut_n", 0.10, 0.10, 0.7, dark, (0, 3.1, -0.25)),
+            ("fuselage", 1.15, 8.6, 1.35, white, (0, 0.3, 0.15)),
+            ("stripe", 1.17, 8.2, 0.20, red, (0, 0.25, -0.28)),
+            ("wing", 11.0, 1.6, 0.12, white, (0, 0.7, 1.02)),
+            ("wingtip_l", 0.55, 0.45, 0.14, red, (-5.35, 0.7, 1.02)),
+            ("wingtip_r", 0.55, 0.45, 0.14, red, (5.35, 0.7, 1.02)),
+            ("hstab", 3.4, 1.0, 0.10, white, (0, -3.6, 0.35)),
+            ("fin", 0.12, 1.05, 1.75, red, (0, -3.6, 1.05)),
+            ("finstripe", 0.13, 0.9, 0.25, white, (0, -3.6, 1.55)),
+            ("fair_l", 0.38, 0.95, 0.55, white, (-0.85, 1.6, -0.78)),
+            ("fair_r", 0.38, 0.95, 0.55, white, (0.85, 1.6, -0.78)),
+            ("fair_n", 0.32, 0.80, 0.50, white, (0, 3.1, -0.75)),
+            ("strut_l", 0.14, 0.14, 0.85, dark, (-0.85, 1.6, -0.28)),
+            ("strut_r", 0.14, 0.14, 0.85, dark, (0.85, 1.6, -0.28)),
+            ("strut_n", 0.12, 0.12, 0.75, dark, (0, 3.1, -0.28)),
         ]
-        # NOTE: extents are (x right, y forward, z up) in Panda's frame:
-        # fuselage 8.4 m long, wing 11 m span, matching the C172 class.
         for name, ex, ey, ez, color, pos in parts:
             node = NodePath(make_box_node(name, ex, ey, ez, color))
             node.setPos(*pos)
             node.setTwoSided(True)
             node.reparentTo(self.plane)
 
+        # Tinted canopy.
+        cabin = NodePath(make_box_node("cabin", 1.0, 2.2, 0.72, glass_c))
+        cabin.setPos(0, 1.15, 0.98)
+        cabin.setTwoSided(True)
+        cabin.setTransparency(TransparencyAttrib.MAlpha)
+        cabin.setAlphaScale(0.92)
+        cabin.reparentTo(self.plane)
+
+        # High-wing struts (diagonal, in the x-z plane).
+        for side in (-1, 1):
+            strut = NodePath(make_box_node("wstrut", 0.09, 0.55, 2.15, white))
+            strut.setPos(side * 1.75, 0.7, 0.32)
+            strut.setR(side * -53.0)
+            strut.setTwoSided(True)
+            strut.reparentTo(self.plane)
+
         # Propeller: blades in the x-z plane at the nose, spinning about y.
         self.prop = self.plane.attachNewNode("prop")
-        blade = NodePath(make_box_node("blade", 0.10, 0.06, 2.0, dark))
-        blade.setTwoSided(True)
-        blade.reparentTo(self.prop)
-        blade2 = NodePath(make_box_node("blade2", 2.0, 0.06, 0.10, dark))
-        blade2.setTwoSided(True)
-        blade2.reparentTo(self.prop)
-        spinner = NodePath(make_box_node("spinner", 0.30, 0.45, 0.30, red))
+        for name, ex, ez in (("blade", 0.11, 2.1), ("blade2", 2.1, 0.11)):
+            blade = NodePath(make_box_node(name, ex, 0.06, ez, dark))
+            blade.setTwoSided(True)
+            blade.reparentTo(self.prop)
+        spinner = NodePath(make_cone_node("spinner", 0.22, 0.5, red))
+        spinner.setP(-90)  # apex forward (+Y)
+        spinner.setPos(0, 0.1, 0)
         spinner.reparentTo(self.prop)
-        self.prop.setPos(0, 4.65, 0.15)
+        self.prop.setPos(0, 4.75, 0.15)
+
+        # Translucent blur disc that fades in with throttle.
+        self.prop_disc = NodePath(make_disc_node("propdisc", 1.12))
+        self.prop_disc.setTexture(self._make_prop_texture())
+        self.prop_disc.setTransparency(TransparencyAttrib.MAlpha)
+        self.prop_disc.setLightOff()
+        self.prop_disc.setDepthWrite(False)
+        self.prop_disc.setTwoSided(True)
+        self.prop_disc.setPos(0, 4.78, 0.15)
+        self.prop_disc.reparentTo(self.plane)
+
+        # Navigation lights + tail strobe (billboarded glows).
+        def nav_light(x, y, z, color):
+            lcm = CardMaker("nav")
+            lcm.setFrame(-0.28, 0.28, -0.28, 0.28)
+            n = self.plane.attachNewNode(lcm.generate())
+            n.setTexture(self.glow_tex)
+            n.setColor(*color)
+            n.setBillboardPointEye()
+            n.setTransparency(TransparencyAttrib.MAlpha)
+            n.setLightOff()
+            n.setDepthWrite(False)
+            n.setPos(x, y, z)
+            return n
+
+        nav_light(-5.55, 0.7, 1.02, (1.0, 0.12, 0.12, 0.95))   # left red
+        nav_light(5.55, 0.7, 1.02, (0.15, 1.0, 0.25, 0.95))     # right green
+        self.strobe = nav_light(0, -4.15, 0.55, (1.0, 1.0, 1.0, 1.0))
 
     # -- HUD --------------------------------------------------------------
-    def _text(self, pos, scale=0.05, align=TextNode.ALeft):
+    def _label(self, pos, scale=0.040, align=TextNode.ALeft,
+               fg=(1, 1, 1, 1)):
+        """Small clean text with a soft shadow (no bulky background box)."""
         return OnscreenText(text="", pos=pos, scale=scale, align=align,
-                            fg=(1, 1, 1, 1), bg=(0, 0, 0, 0.45),
-                            mayChange=True)
+                            fg=fg, shadow=(0, 0, 0, 0.75), mayChange=True)
 
     def _build_hud(self):
-        self.hud_left = self._text((-1.72, 0.88), 0.055)
-        self.hud_right = self._text((1.72, 0.88), 0.055, TextNode.ARight)
-        self.hud_warn = OnscreenText(text="", pos=(0, 0.80), scale=0.075,
-                                    align=TextNode.ACenter, fg=(1, 0.15, 0.15, 1),
-                                    mayChange=True)
-        self.hud_ground = OnscreenText(text="", pos=(0, 0.68), scale=0.05,
-                                      align=TextNode.ACenter, fg=(0.4, 1, 0.4, 1),
-                                      mayChange=True)
+        self.hud_left = self._label((-1.72, 0.90))
+        self.hud_right = self._label((1.72, 0.90), align=TextNode.ARight)
+        self.hud_hint = self._label((1.72, -0.94), scale=0.030,
+                                    align=TextNode.ARight,
+                                    fg=(0.85, 0.85, 0.88, 0.9))
+        self.hud_hint.setText("H help  |  C camera  |  P pause  |  R reset")
+        self.hud_warn = self._label((0, 0.78), scale=0.058,
+                                    align=TextNode.ACenter, fg=(1, 0.18, 0.18, 1))
+        self.hud_status = self._label((0, 0.66), scale=0.038,
+                                      align=TextNode.ACenter,
+                                      fg=(0.45, 1.0, 0.45, 1))
         self._build_attitude_indicator()
-        self.help_text = OnscreenText(text=HELP_TEXT, pos=(-1.70, 0.55),
-                                     scale=0.042, align=TextNode.ALeft,
+        self.help_text = OnscreenText(text=HELP_TEXT, pos=(-1.70, 0.60),
+                                     scale=0.034, align=TextNode.ALeft,
                                      fg=(1, 1, 1, 1), bg=(0, 0, 0, 0.55),
-                                     mayChange=False)
+                                     shadow=(0, 0, 0, 0.6), mayChange=False)
 
     def _build_attitude_indicator(self):
-        """Simple AI: blue/brown ball that pitches and rolls under a fixed symbol."""
+        """Compact AI: blue/brown ball that pitches and rolls under a fixed
+        symbol. Smaller than before, tucked at bottom-center."""
         root = NodePath("ai")
         root.reparentTo(self.aspect2d)
-        root.setPos(0, 0, -0.70)
+        root.setPos(0, 0, -0.74)
+        S = 0.15  # half-size
 
         frame = CardMaker("ai_frame")
-        frame.setFrame(-0.19, 0.19, -0.19, 0.19)
+        frame.setFrame(-S, S, -S, S)
         fn = root.attachNewNode(frame.generate())
         fn.setColor(0.05, 0.05, 0.08, 0.85)
         fn.setBin("fixed", 10)
         fn.setDepthTest(False)
 
         self.ai_ball = root.attachNewNode("ai_ball")
-        sky_cm = CardMaker("ai_sky")
-        sky_cm.setFrame(-0.17, 0.17, 0.0, 0.34)
-        sky_n = self.ai_ball.attachNewNode(sky_cm.generate())
-        sky_n.setColor(0.20, 0.45, 0.85, 1.0)
-        sky_n.setBin("fixed", 11)
-        sky_n.setDepthTest(False)
-        gnd_cm = CardMaker("ai_gnd")
-        gnd_cm.setFrame(-0.17, 0.17, -0.34, 0.0)
-        gnd_n = self.ai_ball.attachNewNode(gnd_cm.generate())
-        gnd_n.setColor(0.55, 0.38, 0.22, 1.0)
-        gnd_n.setBin("fixed", 11)
-        gnd_n.setDepthTest(False)
+        for nm, y0, y1, col in (("ai_sky", 0.0, 2 * S, (0.20, 0.45, 0.85, 1.0)),
+                                ("ai_gnd", -2 * S, 0.0, (0.55, 0.38, 0.22, 1.0))):
+            cm = CardMaker(nm)
+            cm.setFrame(-S * 0.92, S * 0.92, y0, y1)
+            n = self.ai_ball.attachNewNode(cm.generate())
+            n.setColor(*col)
+            n.setBin("fixed", 11)
+            n.setDepthTest(False)
+        # Horizon line.
+        hcm = CardMaker("ai_horizon")
+        hcm.setFrame(-S * 0.92, S * 0.92, -0.006, 0.006)
+        hn = self.ai_ball.attachNewNode(hcm.generate())
+        hn.setColor(1, 1, 1, 0.9)
+        hn.setBin("fixed", 11)
+        hn.setDepthTest(False)
 
         # Fixed aircraft symbol (stays put while the ball moves).
         sym = root.attachNewNode("ai_sym")
-        for x0, x1 in [(-0.13, -0.03), (0.03, 0.13)]:
+        for x0, x1 in [(-0.10, -0.025), (0.025, 0.10)]:
             wcm = CardMaker("ai_wing")
-            wcm.setFrame(x0, x1, -0.012, 0.012)
+            wcm.setFrame(x0, x1, -0.010, 0.010)
             wn = sym.attachNewNode(wcm.generate())
-            wn.setColor(1, 1, 1, 1)
+            wn.setColor(1, 0.85, 0.2, 1)
             wn.setBin("fixed", 12)
             wn.setDepthTest(False)
         dot_cm = CardMaker("ai_dot")
-        dot_cm.setFrame(-0.012, 0.012, -0.012, 0.012)
+        dot_cm.setFrame(-0.010, 0.010, -0.010, 0.010)
         dn = sym.attachNewNode(dot_cm.generate())
-        dn.setColor(1, 1, 1, 1)
+        dn.setColor(1, 0.85, 0.2, 1)
         dn.setBin("fixed", 12)
         dn.setDepthTest(False)
 
@@ -452,6 +881,22 @@ class FlightSim(ShowBase):
             self.prop_angle = (self.prop_angle
                                + (4.0 + 38.0 * self.ctrl.throttle) * dt)
             self.prop.setR(math.degrees(self.prop_angle) % 360.0)
+        # Prop blur fades in with throttle; strobe double-blinks.
+        self.prop_disc.setAlphaScale(0.08 + 0.55 * self.ctrl.throttle)
+        phase = (self.fm.time * 1.1) % 1.0
+        if phase < 0.06 or (0.18 < phase < 0.24):
+            self.strobe.show()
+        else:
+            self.strobe.hide()
+        # Windsock sway.
+        t = self.fm.time
+        self.sock_pivot.setH(18.0 * math.sin(t * 0.6) + 8.0 * math.sin(t * 1.7))
+        # Clouds drift and wrap.
+        for node, speed in self.clouds:
+            x = node.getX() + speed * dt
+            if x > 2900:
+                x = -2900
+            node.setX(x)
         self._update_plane_node()
         self._update_camera(dt)
         self._update_hud()
@@ -462,10 +907,19 @@ class FlightSim(ShowBase):
         self.plane.setPos(px, py, pz)
         h, p, r = sim_quat_to_hpr(self.fm.quat)
         self.plane.setHpr(h, p, r)
+        # Keep the shadow frustum centered on the airplane.
+        self.sun_np.setPos(px + SUN_DIR[0] * 400.0,
+                           py + SUN_DIR[1] * 400.0,
+                           pz + SUN_DIR[2] * 400.0)
 
     def _update_camera(self, dt):
         if self.camera is None:
             return  # headless mode (window-type none): no camera exists
+        # Sun glow follows the camera at a fixed offset toward the sun.
+        cx, cy, cz = self.camera.getPos()
+        self.sun_card.setPos(cx + SUN_DIR[0] * 7000.0,
+                             cy + SUN_DIR[1] * 7000.0,
+                             cz + SUN_DIR[2] * 7000.0)
         px, py, pz = sim_to_panda(self.fm.pos)
         h, p, r = sim_quat_to_hpr(self.fm.quat)
         plane_pos = np.array([px, py, pz])
@@ -503,17 +957,25 @@ class FlightSim(ShowBase):
         vs_fpm = float((R @ fm.vel_b)[2]) * MS_TO_FPM
         info = fm.info()
 
+        thr_n = int(round(c.throttle * 10))
+        thr_bar = "[" + "#" * thr_n + "-" * (10 - thr_n) + "]"
         self.hud_left.setText(
             f"SPD {kts:5.0f} kt\nALT {alt_ft:6.0f} ft\n"
             f"HDG {hdg:03.0f}\nVS {vs_fpm:+5.0f} fpm")
         self.hud_right.setText(
-            f"THR {c.throttle * 100:3.0f}%\nFLAP {c.flap_degrees():2d} deg\n"
+            f"THR {thr_bar} {c.throttle * 100:3.0f}%\n"
+            f"FLAP {c.flap_degrees():2d} deg\n"
             f"TRIM {c.trim:+.2f}\nBRK {'ON' if c.brakes else 'off'}")
         if info.get("stalled"):
             self.hud_warn.setText("*** STALL ***" if (fm.time % 1.0) < 0.6 else "")
         else:
             self.hud_warn.setText("")
-        self.hud_ground.setText("ON GROUND" if fm.on_ground else "")
+        if self.paused:
+            self.hud_status.setText("PAUSED - press P to resume")
+        elif fm.on_ground:
+            self.hud_status.setText("ON GROUND")
+        else:
+            self.hud_status.setText("")
 
         # Attitude indicator: the ball carries the horizon; when the aircraft
         # rolls right (roll is left-positive, so roll < 0), the horizon appears
@@ -522,13 +984,12 @@ class FlightSim(ShowBase):
         self.ai_ball.setR(-roll * DEG)
         self.ai_ball.setZ(-pitch * 0.55)
 
-        if self.paused:
-            self.hud_ground.setText("PAUSED — press P to resume")
 
 def main():
     """Entry point for the graphical simulator."""
     loadPrcFileData("", "window-title Python Flight Simulator")
     loadPrcFileData("", "win-size 1280 720")
+    loadPrcFileData("", "framebuffer-multisample 1")
     app = FlightSim()
     app.run()
 

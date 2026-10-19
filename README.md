@@ -19,9 +19,13 @@ land — all computed from first-principles aerodynamics each physics step.
   wheel brakes, rotation and liftoff when lift exceeds weight.
 - **Flaps & trim**: 0/10/20/30° detents with lift/drag increments; elevator
   trim for hands-off flight.
-- **3D world (Panda3D)**: procedural terrain with a marked runway, gradient
-  sky, sun + fog + lighting, and a low-poly airplane built from primitives —
-  no downloaded assets. Spinning propeller tied to throttle.
+- **3D world (Panda3D)**: procedural terrain with field patchwork and a
+  fully marked runway (edge lines, centerline, thresholds, touchdown zones,
+  designation numbers), gradient sky dome with sun glow, drifting clouds,
+  trees, hangars, windsock, runway edge lights, real-time shadows, and a
+  refined airplane with wing struts, gear fairings, prop-blur disc, and
+  navigation lights + tail strobe — no downloaded assets. Compact,
+  minimal HUD with attitude indicator and throttle bar.
 - **Three cameras**: chase, cockpit (with attitude indicator), tower flyby.
 - **2D HUD**: airspeed (kts), altitude (ft), heading, vertical speed (fpm),
   throttle %, flap detent, trim, stall warning, on-ground indicator.
