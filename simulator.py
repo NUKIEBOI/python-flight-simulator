@@ -938,7 +938,8 @@ class FlightSim(ShowBase):
 
     # -- airplane ---------------------------------------------------------
     def _build_airplane(self):
-        """Refined C172-ish model (panda axes: x span, y length, z up)."""
+        """C172-ish model with a rounded fuselage (panda axes: x span,
+        y length, z up, nose along +Y)."""
         white = (0.93, 0.93, 0.95)
         red = (0.72, 0.10, 0.10)
         dark = (0.10, 0.11, 0.14)
@@ -946,49 +947,63 @@ class FlightSim(ShowBase):
 
         self.plane = self.render.attachNewNode("plane")
 
-        parts = [
-            ("fuselage", 1.15, 8.6, 1.35, white, (0, 0.3, 0.15)),
-            ("stripe", 1.17, 8.2, 0.20, red, (0, 0.25, -0.28)),
-            ("wing", 11.0, 1.6, 0.12, white, (0, 0.7, 1.02)),
-            ("wingtip_l", 0.55, 0.45, 0.14, red, (-5.35, 0.7, 1.02)),
-            ("wingtip_r", 0.55, 0.45, 0.14, red, (5.35, 0.7, 1.02)),
-            ("hstab", 3.4, 1.0, 0.10, white, (0, -3.6, 0.35)),
-            ("fin", 0.12, 1.05, 1.75, red, (0, -3.6, 1.05)),
-            ("finstripe", 0.13, 0.9, 0.25, white, (0, -3.6, 1.55)),
-            ("fair_l", 0.38, 0.95, 0.55, white, (-0.85, 1.6, -0.78)),
-            ("fair_r", 0.38, 0.95, 0.55, white, (0.85, 1.6, -0.78)),
-            ("fair_n", 0.32, 0.80, 0.50, white, (0, 3.1, -0.75)),
-            ("strut_l", 0.14, 0.14, 0.85, dark, (-0.85, 1.6, -0.28)),
-            ("strut_r", 0.14, 0.14, 0.85, dark, (0.85, 1.6, -0.28)),
-            ("strut_n", 0.12, 0.12, 0.75, dark, (0, 3.1, -0.28)),
-        ]
-        for name, ex, ey, ez, color, pos in parts:
-            node = NodePath(make_box_node(name, ex, ey, ez, color))
+        def part(node, pos, h=0.0, p=0.0, r=0.0):
             node.setPos(*pos)
+            node.setH(h)
+            node.setP(p)
+            node.setR(r)
             node.setTwoSided(True)
             node.reparentTo(self.plane)
+            return node
 
-        # Tinted canopy.
-        cabin = NodePath(make_box_node("cabin", 1.0, 2.2, 0.72, glass_c))
-        cabin.setPos(0, 1.15, 0.98)
-        cabin.setTwoSided(True)
-        cabin.setTransparency(TransparencyAttrib.MAlpha)
-        cabin.setAlphaScale(0.92)
-        cabin.reparentTo(self.plane)
-
-        # Tapered engine cowling + tail cone (less boxy silhouette).
-        cowl = NodePath(make_box_node("cowling", 1.02, 1.7, 1.18, white))
-        cowl.setPos(0, 4.35, 0.10)
-        cowl.setTwoSided(True)
-        cowl.reparentTo(self.plane)
-        grille = NodePath(make_box_node("grille", 0.70, 0.10, 0.45, dark))
-        grille.setPos(0, 5.22, 0.05)
-        grille.reparentTo(self.plane)
-        tcone = NodePath(make_cone_node("tailcone", 0.55, 2.6, white))
-        tcone.setP(90)  # apex aft
-        tcone.setPos(0, -4.0, 0.28)
-        tcone.setTwoSided(True)
-        tcone.reparentTo(self.plane)
+        # Rounded fuselage: cowling + cabin tube + tapered tail cone.
+        part(NodePath(make_cylinder_node("cowling", 0.60, 1.8, white)),
+             (0, 3.6, 0.10), p=-90)
+        part(NodePath(make_cylinder_node("cabin_tube", 0.68, 4.5, white)),
+             (0, -0.9, 0.15), p=-90)
+        part(NodePath(make_cone_node("tailcone", 0.68, 3.6, white)),
+             (0, -0.9, 0.25), p=90)  # apex aft
+        # Red cheatline.
+        part(NodePath(make_box_node("stripe", 1.38, 8.2, 0.16, red)),
+             (0, 0.5, -0.28))
+        # Windshield + side windows.
+        part(NodePath(make_box_node("windshield", 0.95, 0.08, 0.75, glass_c)),
+             (0, 2.75, 0.72), p=28)
+        for side in (-1, 1):
+            part(NodePath(make_box_node("sidewin", 0.06, 1.7, 0.45, glass_c)),
+                 (side * 0.69, 1.9, 0.62))
+            part(NodePath(make_box_node("rearwin", 0.06, 0.9, 0.40, glass_c)),
+                 (side * 0.65, 0.55, 0.60))
+        # High wing with slight dihedral + red tips.
+        part(NodePath(make_box_node("wing_c", 2.4, 1.7, 0.15, white)),
+             (0, 0.9, 1.02))
+        for side in (-1, 1):
+            part(NodePath(make_box_node("wing_o", 4.6, 1.5, 0.13, white)),
+                 (side * 4.5, 0.9, 1.10), r=side * -4.0)
+            part(NodePath(make_box_node("wingtip", 0.5, 1.3, 0.14, red)),
+                 (side * 6.85, 0.9, 1.26), r=side * -4.0)
+            # Wing struts (diagonal).
+            part(NodePath(make_box_node("wstrut", 0.09, 0.55, 2.15, white)),
+                 (side * 1.75, 0.7, 0.32), r=side * -53.0)
+        # Tail: stabilizer + swept red fin + dorsal extension.
+        part(NodePath(make_box_node("hstab", 3.2, 1.0, 0.10, white)),
+             (0, -4.0, 0.45))
+        part(NodePath(make_box_node("fin", 0.14, 1.15, 1.8, red)),
+             (0, -4.05, 1.30), p=10)
+        part(NodePath(make_box_node("fintip", 0.15, 0.9, 0.30, white)),
+             (0, -4.22, 2.15), p=10)
+        part(NodePath(make_box_node("dorsal", 0.10, 1.7, 0.45, red)),
+             (0, -2.85, 0.98), p=24)
+        # Landing gear with fairings.
+        for name, ex, ey, ez, pos in (
+                ("fair_l", 0.38, 0.95, 0.55, (-0.85, 1.6, -0.78)),
+                ("fair_r", 0.38, 0.95, 0.55, (0.85, 1.6, -0.78)),
+                ("fair_n", 0.32, 0.80, 0.50, (0, 3.1, -0.75)),
+                ("strut_l", 0.14, 0.14, 0.85, (-0.85, 1.6, -0.28)),
+                ("strut_r", 0.14, 0.14, 0.85, (0.85, 1.6, -0.28)),
+                ("strut_n", 0.12, 0.12, 0.75, (0, 3.1, -0.28))):
+            color = white if name.startswith("fair") else dark
+            part(NodePath(make_box_node(name, ex, ey, ez, color)), pos)
 
         # High-wing struts (diagonal, in the x-z plane).
         for side in (-1, 1):
@@ -1008,7 +1023,7 @@ class FlightSim(ShowBase):
         spinner.setP(-90)  # apex forward (+Y)
         spinner.setPos(0, 0.1, 0)
         spinner.reparentTo(self.prop)
-        self.prop.setPos(0, 4.75, 0.15)
+        self.prop.setPos(0, 5.55, 0.10)
 
         # Translucent blur disc that fades in with throttle.
         self.prop_disc = NodePath(make_disc_node("propdisc", 1.12))
@@ -1017,7 +1032,7 @@ class FlightSim(ShowBase):
         self.prop_disc.setLightOff()
         self.prop_disc.setDepthWrite(False)
         self.prop_disc.setTwoSided(True)
-        self.prop_disc.setPos(0, 4.78, 0.15)
+        self.prop_disc.setPos(0, 5.58, 0.10)
         self.prop_disc.reparentTo(self.plane)
 
         # Navigation lights + tail strobe (billboarded glows).
