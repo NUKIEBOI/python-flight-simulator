@@ -48,7 +48,7 @@ from panda3d.core import (
     loadPrcFileData,
 )
 
-from aircraft import Cessna172, ViperJet
+from aircraft import Cessna172, ViperJet, BoeingJet, make_viper_jet, make_boeing_jet
 from atmosphere import Atmosphere
 from controls import ControlState
 from flight_model import FlightModel, quat_to_matrix, GEAR_HEIGHT
@@ -273,7 +273,7 @@ CONTROLS
   B ................. toggle wheel brakes
   C ................. camera (chase / cockpit / tower / top-down)
   P ................. free cam (auto-engages autopilot)
-  V ................. switch aircraft (C-172 / Viper jet)
+  V ................. switch aircraft (C-172 / Viper jet / Boeing)
   H ................. hide/show all UI   / ................. toggle this help
   SPACE ............. pause             R ................. reset flight
   Esc ............... quit
@@ -314,6 +314,9 @@ class FlightSim(ShowBase):
         self.fc_p = 0.0
         self.fc_speed = 30.0
         self._fc_rmb = False
+        self._fc_mx = 0.0
+        self._fc_my = 0.0
+        self._fc_settle = 0
         self.prop_angle = 0.0
         self.keys = {}
         self.clouds = []
@@ -321,7 +324,9 @@ class FlightSim(ShowBase):
         self._build_world()
         self._build_airplane()
         self._build_jet_plane()
+        self._build_boeing()
         self.active_plane = self.plane
+        self.ac_hud = "C-172"
         self._build_hud()
         self._bind_keys()
 
@@ -971,6 +976,20 @@ class FlightSim(ShowBase):
         cabin.setAlphaScale(0.92)
         cabin.reparentTo(self.plane)
 
+        # Tapered engine cowling + tail cone (less boxy silhouette).
+        cowl = NodePath(make_box_node("cowling", 1.02, 1.7, 1.18, white))
+        cowl.setPos(0, 4.35, 0.10)
+        cowl.setTwoSided(True)
+        cowl.reparentTo(self.plane)
+        grille = NodePath(make_box_node("grille", 0.70, 0.10, 0.45, dark))
+        grille.setPos(0, 5.22, 0.05)
+        grille.reparentTo(self.plane)
+        tcone = NodePath(make_cone_node("tailcone", 0.55, 2.6, white))
+        tcone.setP(90)  # apex aft
+        tcone.setPos(0, -4.0, 0.28)
+        tcone.setTwoSided(True)
+        tcone.reparentTo(self.plane)
+
         # High-wing struts (diagonal, in the x-z plane).
         for side in (-1, 1):
             strut = NodePath(make_box_node("wstrut", 0.09, 0.55, 2.15, white))
@@ -1020,69 +1039,168 @@ class FlightSim(ShowBase):
         self.strobe = nav_light(0, -4.15, 0.55, (1.0, 1.0, 1.0, 1.0))
 
     def _build_jet_plane(self):
-        """Flyable F-16-ish jet visual (panda axes: x span, y length, z up,
-        nose along +Y)."""
-        gray = (0.46, 0.48, 0.52)
-        dark = (0.16, 0.17, 0.20)
-        glass_c = (0.10, 0.14, 0.22)
+        """Sleek F-16-class fighter (panda axes: x span, y length, z up,
+        nose along +Y). Tapered nose, bubble canopy, swept tapered wings."""
+        gray = (0.60, 0.62, 0.66)
+        dark = (0.18, 0.19, 0.22)
+        glass_c = (0.08, 0.12, 0.20)
         orange = (1.0, 0.45, 0.08)
 
         self.jet = self.render.attachNewNode("jet")
-        parts = [
-            # name, ex, ey, ez, color, pos, h-deg
-            ("jfuselage", 1.7, 9.5, 1.7, gray, (0, 0, 0), 0),
-            ("jcanopy", 1.0, 2.4, 0.55, glass_c, (0, 1.6, 1.0), 0),
-            ("jspine", 1.2, 4.0, 0.5, gray, (0, -1.5, 0.95), 0),
-            ("jwing_r", 5.2, 2.6, 0.18, gray, (3.0, -0.6, -0.1), -28),
-            ("jwing_l", 5.2, 2.6, 0.18, gray, (-3.0, -0.6, -0.1), 28),
-            ("jrail_r", 0.28, 1.4, 0.28, dark, (5.35, -1.9, -0.1), -28),
-            ("jrail_l", 0.28, 1.4, 0.28, dark, (-5.35, -1.9, -0.1), 28),
-            ("jstab_r", 2.4, 1.3, 0.14, gray, (1.5, -4.3, 0.25), -22),
-            ("jstab_l", 2.4, 1.3, 0.14, gray, (-1.5, -4.3, 0.25), 22),
-            ("jfin", 0.18, 1.7, 2.4, gray, (0, -4.1, 1.3), 0),
-            ("jfintip", 0.20, 0.6, 0.5, orange, (0, -4.1, 2.55), 0),
-            ("jintake_r", 0.7, 2.2, 0.9, dark, (1.05, 0.8, -0.5), 0),
-            ("jintake_l", 0.7, 2.2, 0.9, dark, (-1.05, 0.8, -0.5), 0),
-        ]
-        for name, ex, ey, ez, color, pos, h in parts:
-            node = NodePath(make_box_node(name, ex, ey, ez, color))
+
+        def part(node, pos, h=0.0, p=0.0):
             node.setPos(*pos)
             node.setH(h)
+            node.setP(p)
             node.setTwoSided(True)
             node.reparentTo(self.jet)
-        # Pointed nose cone (apex forward).
-        nose = NodePath(make_cone_node("jnose", 0.85, 2.6, gray))
-        nose.setP(-90)  # apex toward +Y
-        nose.setPos(0, 6.0, 0)
-        nose.reparentTo(self.jet)
-        # Afterburner glow.
-        burner = NodePath(make_box_node("jburner", 0.9, 0.6, 0.9, orange))
-        burner.setPos(0, -4.95, 0)
-        burner.setLightOff()
-        burner.reparentTo(self.jet)
+            return node
+
+        # Long tapered nose.
+        nose = NodePath(make_cone_node("nose", 0.62, 3.6, gray))
+        part(nose, (0, 5.2, 0.10), p=-90)  # apex toward +Y
+        # Forward fuselage.
+        ff = NodePath(make_cylinder_node("ffus", 0.62, 3.0, gray))
+        part(ff, (0, 2.2, 0.10), p=-90)
+        # Mid / aft fuselage.
+        for name, ex, ey, ez, pos in (
+                ("midfus", 1.55, 4.6, 1.45, (0, -0.2, 0.10)),
+                ("aftfus", 1.35, 3.0, 1.25, (0, -3.8, 0.15)),
+                ("spine", 0.95, 3.6, 0.40, (0, -0.6, 0.90))):
+            part(NodePath(make_box_node(name, ex, ey, ez, gray)), pos)
+        # Bubble canopy.
+        can = NodePath(make_sphere_node("canopy", 1.0))
+        can.setScale(0.55, 1.5, 0.50)
+        part(can, (0, 2.9, 0.72))
+        # Canopy frame stripe.
+        part(NodePath(make_box_node("cframe", 0.18, 2.2, 0.12, dark)),
+             (0, 2.9, 1.05))
+        # Swept tapered wings (two segments per side).
+        for side in (-1, 1):
+            h = -side * 30
+            part(NodePath(make_box_node("wing_in", 3.4, 3.0, 0.16, gray)),
+                 (side * 2.7, -0.7, -0.20), h=h)
+            part(NodePath(make_box_node("wing_out", 2.4, 2.0, 0.12, gray)),
+                 (side * 5.1, -2.5, -0.20), h=h)
+            part(NodePath(make_box_node("rail", 0.22, 1.6, 0.22, dark)),
+                 (side * 6.2, -3.5, -0.20), h=h)
+            # LERX strakes.
+            part(NodePath(make_box_node("lerx", 0.55, 2.6, 0.14, gray)),
+                 (side * 0.95, 1.6, 0.30), h=-side * 12)
+            # Tailplanes.
+            part(NodePath(make_box_node("stab", 2.8, 1.5, 0.14, gray)),
+                 (side * 1.65, -4.6, 0.35), h=-side * 26)
+            # Chin intakes.
+            part(NodePath(make_box_node("intake", 0.65, 2.4, 1.0, dark)),
+                 (side * 1.02, 1.1, -0.50))
+        # Vertical tail + tip.
+        part(NodePath(make_box_node("fin", 0.16, 2.0, 2.8, gray)),
+             (0, -4.4, 1.55))
+        part(NodePath(make_box_node("fintip", 0.18, 0.7, 0.45, orange)),
+             (0, -4.4, 3.05))
+        # Engine nozzle + burner glow.
+        noz = NodePath(make_cylinder_node("nozzle", 0.60, 0.9, dark))
+        part(noz, (0, -5.6, 0.15), p=-90)
+        burn = NodePath(make_cylinder_node("burner", 0.48, 0.35, orange))
+        burn.setLightOff()
+        part(burn, (0, -5.95, 0.15), p=-90)
         self.jet.hide()
 
+    def _build_boeing(self):
+        """Boeing 737-class twin-engine airliner (panda axes: x span,
+        y length, z up, nose along +Y). Game-scaled. White livery, blue
+        belly stripe and tail."""
+        white = (0.92, 0.93, 0.95)
+        blue = (0.10, 0.28, 0.62)
+        dark = (0.12, 0.13, 0.16)
+        glass_c = (0.07, 0.10, 0.16)
+
+        self.boeing = self.render.attachNewNode("boeing")
+
+        def part(node, pos, h=0.0, p=0.0):
+            node.setPos(*pos)
+            node.setH(h)
+            node.setP(p)
+            node.setTwoSided(True)
+            node.reparentTo(self.boeing)
+            return node
+
+        # Nose: rounded (scaled sphere) + flight-deck windows.
+        nose = NodePath(make_sphere_node("bnose", 1.0))
+        nose.setScale(1.25, 1.6, 1.15)
+        part(nose, (0, 9.5, 0.2))
+        part(NodePath(make_box_node("bwindows", 1.7, 1.0, 0.55, glass_c)),
+             (0, 10.1, 0.75))
+        # Main tube + blue belly stripe.
+        tube = NodePath(make_cylinder_node("btube", 1.25, 17.0, white))
+        part(tube, (0, -8.5, 0.2), p=-90)
+        part(NodePath(make_box_node("bstripe", 2.52, 16.5, 0.28, blue)),
+             (0, -0.5, -0.85))
+        # Upswept tail cone.
+        tail = NodePath(make_cone_node("btail", 1.25, 5.5, white))
+        part(tail, (0, -8.5, 0.55), p=96)  # apex aft, kicked up slightly
+        # Swept wings with winglets + underwing engines.
+        for side in (-1, 1):
+            h = -side * 24
+            part(NodePath(make_box_node("bwing_in", 7.0, 3.4, 0.32, white)),
+                 (side * 4.5, -1.5, -0.55), h=h)
+            part(NodePath(make_box_node("bwing_out", 5.0, 2.4, 0.24, white)),
+                 (side * 10.0, -4.2, -0.55), h=h)
+            part(NodePath(make_box_node("bwinglet", 0.22, 1.6, 1.8, blue)),
+                 (side * 13.6, -6.3, 0.35), h=h)
+            eng = NodePath(make_cylinder_node("beng", 0.72, 2.8, white))
+            part(eng, (side * 4.2, 1.2, -1.75), p=-90)
+            lip = NodePath(make_cylinder_node("blip", 0.60, 0.25, dark))
+            part(lip, (side * 4.2, 3.85, -1.75), p=-90)
+            part(NodePath(make_box_node("bpylon", 0.35, 1.6, 0.9, white)),
+                 (side * 4.2, 0.4, -1.05))
+            # Horizontal stabilizer.
+            part(NodePath(make_box_node("bstab", 5.2, 1.9, 0.24, white)),
+                 (side * 3.0, -12.6, 1.0), h=-side * 28)
+        # Tall blue tail fin.
+        part(NodePath(make_box_node("bfin", 0.30, 3.2, 4.6, blue)),
+             (0, -12.8, 2.8))
+        part(NodePath(make_box_node("bfintip", 0.32, 1.2, 0.9, white)),
+             (0, -12.8, 5.3))
+        # Simple gear.
+        for gx, gy in ((0, 7.5), (-1.6, -1.0), (1.6, -1.0)):
+            part(NodePath(make_box_node("bgear", 0.28, 0.28, 1.1, dark)),
+                 (gx, gy, -1.55))
+            part(NodePath(make_box_node("bwheel", 0.55, 0.7, 0.55, dark)),
+                 (gx, gy, -2.05))
+        self.boeing.hide()
+
     def _switch_aircraft(self):
-        """V key: swap between the C172 and the Viper jet, keeping position
-        and flight direction. The jet gets a minimum sane airspeed."""
-        if isinstance(self.fm.ac, ViperJet):
-            self.fm.ac = Cessna172()
-            self.jet.hide()
-            self.active_plane = self.plane
-            self.active_plane.show()
-            self._radio("Cessna 172 - rotate 55 kts.")
-        else:
-            self.fm.ac = ViperJet()
-            self.plane.hide()
-            self.active_plane = self.jet
-            self.active_plane.show()
-            v = self.fm.airspeed()
-            if v < 75.0:
-                if v > 0.5:
-                    self.fm.vel_b *= 75.0 / v
-                else:
-                    self.fm.vel_b = np.array([75.0, 0.0, 0.0])
-            self._radio("Viper jet - rotate 140 kts. Mind the thrust.")
+        """V key: cycle C172 -> Viper jet -> Boeing -> C172, keeping position
+        and flight direction. Jets get a minimum sane airspeed."""
+        order = ["c172", "viper", "boeing"]
+        cur = ("viper" if isinstance(self.fm.ac, ViperJet)
+               else "boeing" if isinstance(self.fm.ac, BoeingJet)
+               else "c172")
+        nxt = order[(order.index(cur) + 1) % len(order)]
+        defs = {
+            # factory, node attr, HUD name, min speed m/s, radio message
+            "c172": (Cessna172, "plane", "C-172", 0.0,
+                     "Cessna 172 - rotate 55 kts."),
+            "viper": (make_viper_jet, "jet", "VIPER", 75.0,
+                      "Viper jet - rotate 140 kts. Mind the thrust."),
+            "boeing": (make_boeing_jet, "boeing", "BOEING", 70.0,
+                       "Boeing heavy - rotate 150 kts."),
+        }
+        factory, node_attr, hud, min_v, radio = defs[nxt]
+        self.fm.ac = factory()
+        for na in ("plane", "jet", "boeing"):
+            getattr(self, na).hide()
+        self.active_plane = getattr(self, node_attr)
+        self.active_plane.show()
+        self.ac_hud = hud
+        v = self.fm.airspeed()
+        if min_v > 0.0 and v < min_v:
+            if v > 0.5:
+                self.fm.vel_b *= min_v / v
+            else:
+                self.fm.vel_b = np.array([min_v, 0.0, 0.0])
+        self._radio(radio)
         self.ctrl.reset()
 
     # -- HUD --------------------------------------------------------------
@@ -1631,10 +1749,10 @@ class FlightSim(ShowBase):
                      (1.0 if self._held("rud_l") else 0.0)))
             self.camera.setPos(*(np.array(self.camera.getPos()) +
                                  move * speed * dt))
-            # Right-mouse drag: free look (no lock-on to the plane). While
-            # held, the cursor is hidden and pinned to the window center so
-            # it can't wander onto other monitors; look is driven by the
-            # offset from center each frame.
+            # Right-mouse drag: free look (no lock-on to the plane). Look is
+            # driven by cursor *movement* (immune to any centering bias, so
+            # no drift), and the cursor is hidden + re-centered near the
+            # screen edges so the drag can't wander onto other monitors.
             mw = self.mouseWatcherNode
             if mw is not None and mw.hasMouse():
                 rmb = mw.isButtonDown(MouseButton.three())
@@ -1642,19 +1760,30 @@ class FlightSim(ShowBase):
                 if rmb and self.win is not None:
                     if not self._fc_rmb:
                         self._fc_set_cursor_locked(True)
+                        self.win.movePointer(0, self.win.getXSize() // 2,
+                                             self.win.getYSize() // 2)
+                        self._fc_mx, self._fc_my = 0.0, 0.0
+                        self._fc_settle = 2
+                    elif self._fc_settle > 0:
+                        # Absorb frames while the re-center lands.
+                        self._fc_settle -= 1
+                        self._fc_mx, self._fc_my = mx, my
                     else:
-                        self.fc_h -= mx * 100.0
+                        self.fc_h -= (mx - self._fc_mx) * 100.0
                         self.fc_p = max(-85.0, min(85.0,
-                                                   self.fc_p + my * 80.0))
-                        self.win.movePointer(
-                            0, self.win.getXSize() // 2, self.win.getYSize() // 2)
+                                                   self.fc_p + (my - self._fc_my) * 80.0))
+                        self._fc_mx, self._fc_my = mx, my
+                        if abs(mx) > 0.9 or abs(my) > 0.9:
+                            self.win.movePointer(0, self.win.getXSize() // 2,
+                                                 self.win.getYSize() // 2)
+                            self._fc_settle = 2
                 elif self._fc_rmb:
                     self._fc_set_cursor_locked(False)
                 self._fc_rmb = rmb
             self.camera.setHpr(self.fc_h, self.fc_p, 0.0)
 
     def _fc_set_cursor_locked(self, locked):
-        """Hide/show the OS cursor and (when locking) center it in the window."""
+        """Hide/show the OS cursor (position is managed by the drag code)."""
         win = self.win
         if win is None:
             return
@@ -1662,8 +1791,6 @@ class FlightSim(ShowBase):
         props = WindowProperties()
         props.setCursorHidden(locked)
         win.requestProperties(props)
-        if locked:
-            win.movePointer(0, win.getXSize() // 2, win.getYSize() // 2)
 
     def _update_hud(self):
         fm, c = self.fm, self.ctrl
@@ -1680,7 +1807,7 @@ class FlightSim(ShowBase):
         thr_n = int(round(c.throttle * 10))
         thr_bar = "[" + "#" * thr_n + "-" * (10 - thr_n) + "]"
         self.hud_left.setText(
-            f"AC  {'VIPER' if isinstance(self.fm.ac, ViperJet) else 'C-172'}\n"
+            f"AC  {self.ac_hud}\n"
             f"SPD {kts:5.0f} kt\nALT {alt_ft:6.0f} ft\n"
             f"HDG {hdg:03.0f}\nVS {vs_fpm:+5.0f} fpm")
         self.hud_right.setText(

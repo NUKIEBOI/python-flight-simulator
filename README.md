@@ -78,12 +78,15 @@ then tap `F` for the autopilot wing leveler.
 
 ## Aircraft
 
-Two flyables, switched with `V` (position and direction are kept):
+Three flyables, cycled with `V` (position and direction are kept):
 
 - **C-172** — the classic trainer: 55 kt rotation, gentle and forgiving.
 - **Viper jet** — F-16-class thrust-to-weight above 1. It holds airspeed in
   any attitude: climb vertically, loop, and maneuver without bleeding speed
   the way the Cessna does. Rotate at 140 kts and mind the thrust.
+- **Boeing** — 737-class twin-engine airliner. Heavy and gentle with modest
+  thrust-to-weight: it climbs like an airliner, not a fighter. Rotate at
+  150 kts.
 
 ## Training sortie
 

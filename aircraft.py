@@ -170,6 +170,68 @@ def make_viper_jet() -> ViperJet:
     return ViperJet()
 
 
+@dataclass
+class BoeingJet(Aircraft):
+    """Boeing 737-class twin-engine airliner.
+
+    Heavy and gentle: modest thrust/weight, so it climbs like an airliner,
+    not a fighter. Control derivatives are detuned for high-speed keyboard
+    flying. Game-scaled (not full 37 m) so it sits sensibly on the gear.
+    """
+
+    name: str = "Boeing 737-class"
+
+    # --- Mass & inertia -------------------------------------------------
+    mass: float = 42000.0
+    Ixx: float = 280000.0
+    Iyy: float = 520000.0
+    Izz: float = 650000.0
+
+    # --- Wing geometry --------------------------------------------------
+    wing_area: float = 125.0
+    wing_span: float = 35.0
+    wing_chord: float = 3.6
+
+    # --- Lift / drag ----------------------------------------------------
+    CL0: float = 0.25
+    CL_alpha: float = 4.2
+    alpha_crit: float = 0.26
+    CD0: float = 0.030
+    induced_k: float = 0.045
+    CY_beta: float = -0.5
+
+    # --- Pitch ----------------------------------------------------------
+    Cm0: float = 0.0
+    Cma: float = 0.9
+    Cmq: float = -16.0
+    Cmde: float = -0.50            # detuned for high-q keyboard flying
+
+    # --- Roll -----------------------------------------------------------
+    Clb: float = 0.09
+    Clp: float = -0.55
+    Clda: float = -0.08           # detuned (airliners roll gently)
+    Cldr: float = -0.02
+
+    # --- Yaw ------------------------------------------------------------
+    Cnb: float = 0.12
+    Cnr: float = -0.20
+    Cnda: float = -0.02
+    Cndr: float = 0.035           # detuned
+
+    # --- Propulsion -----------------------------------------------------
+    # Near-constant 240 kN total at any airspeed (twin engines).
+    thrust_static: float = 240000.0
+    prop_power: float = 150_000_000.0
+
+    # --- Game assists ---------------------------------------------------
+    ap_gain: float = 0.35
+
+
+def make_boeing_jet() -> BoeingJet:
+    """Factory returning the BoeingJet parameter set."""
+    return BoeingJet()
+
+
 # Convenience: flap lookup tables as dicts for readable access.
 def flap_tables(ac: Aircraft):
     return {
