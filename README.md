@@ -64,7 +64,7 @@ python tests/test_flight_model.py   # physics verification tests
 | `T` / `G` | Elevator trim nose-up / nose-down |
 | `B` | Toggle wheel brakes |
 | `C` | Camera: chase → cockpit → tower → top-down |
-| `P` | Free cam: fly with `WASD`, `Q`/`E` down/up, hold `Shift` for 4x speed, scroll wheel adjusts speed, right-mouse-drag to look. The plane is untouched (no pilot input, no autopilot) |
+| `P` | Free cam: fly with `WASD`, `Q`/`E` down/up, hold `Shift` for 4x speed, scroll wheel adjusts speed, hold right mouse to look (cursor locks to the window). The plane is untouched (no pilot input, no autopilot) |
 | `V` | Switch aircraft: C-172 ↔ Viper jet |
 | `H` | Hide/show all UI |
 | `/` | Toggle help overlay |

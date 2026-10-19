@@ -281,7 +281,8 @@ Takeoff: full throttle (hold Shift), rotate at 55 kts (pull S) --
   140 kts in the Viper jet.
 Tap F for the autopilot (holds wings level).
 Free cam: WASD fly, Q/E down/up, hold Shift for 4x speed, scroll wheel
-  adjusts speed, right-mouse-drag to look, P exits.
+  adjusts speed, hold right mouse to look (cursor locks to the window),
+  P exits.
 Mission: take off, fly 4 gates, intercept the drone, land (R resets).
 """
 
@@ -311,8 +312,6 @@ class FlightSim(ShowBase):
         self.fc_h = 0.0
         self.fc_p = 0.0
         self.fc_speed = 30.0
-        self._fc_mx = 0.0
-        self._fc_my = 0.0
         self._fc_rmb = False
         self.prop_angle = 0.0
         self.keys = {}
@@ -1277,6 +1276,8 @@ class FlightSim(ShowBase):
         The plane is completely untouched: no pilot input, no autopilot."""
         if self.cam_mode == 4:
             self.cam_mode = 0
+            self._fc_set_cursor_locked(False)
+            self._fc_rmb = False
             self._radio("Free cam off - chase camera.")
         else:
             self.cam_mode = 4
@@ -1618,7 +1619,7 @@ class FlightSim(ShowBase):
             fwd = np.array([-math.sin(hr) * math.cos(pr),
                             math.cos(hr) * math.cos(pr),
                             math.sin(pr)])
-            right = np.array([math.cos(hr), -math.sin(hr), 0.0])
+            right = np.array([math.cos(hr), math.sin(hr), 0.0])
             speed = self.fc_speed * (4.0 if self._held("thr_up") else 1.0)
             move = (fwd * ((1.0 if self._held("up") else 0.0) -
                            (1.0 if self._held("down") else 0.0)) +
@@ -1629,17 +1630,38 @@ class FlightSim(ShowBase):
                      (1.0 if self._held("rud_l") else 0.0)))
             self.camera.setPos(*(np.array(self.camera.getPos()) +
                                  move * speed * dt))
-            # Right-mouse drag: free look (no lock-on to the plane).
+            # Right-mouse drag: free look (no lock-on to the plane). While
+            # held, the cursor is hidden and pinned to the window center so
+            # it can't wander onto other monitors; look is driven by the
+            # offset from center each frame.
             mw = self.mouseWatcherNode
             if mw is not None and mw.hasMouse():
                 rmb = mw.isButtonDown(MouseButton.three())
                 mx, my = mw.getMouseX(), mw.getMouseY()
-                if rmb and self._fc_rmb:
-                    self.fc_h -= (mx - self._fc_mx) * 100.0
-                    self.fc_p = max(-85.0, min(85.0,
-                                               self.fc_p + (my - self._fc_my) * 80.0))
-                self._fc_mx, self._fc_my, self._fc_rmb = mx, my, rmb
+                if rmb and self.win is not None:
+                    if not self._fc_rmb:
+                        self._fc_set_cursor_locked(True)
+                    else:
+                        self.fc_h -= mx * 100.0
+                        self.fc_p = max(-85.0, min(85.0,
+                                                   self.fc_p + my * 80.0))
+                        self.win.movePointer(
+                            0, self.win.getXSize() // 2, self.win.getYSize() // 2)
+                elif self._fc_rmb:
+                    self._fc_set_cursor_locked(False)
+                self._fc_rmb = rmb
             self.camera.setHpr(self.fc_h, self.fc_p, 0.0)
+
+    def _fc_set_cursor_locked(self, locked):
+        """Hide/show the OS cursor and (when locking) center it in the window."""
+        win = self.win
+        if win is None:
+            return
+        props = win.getProperties()
+        props.setCursorHidden(locked)
+        win.requestProperties(props)
+        if locked:
+            win.movePointer(0, win.getXSize() // 2, win.getYSize() // 2)
 
     def _update_hud(self):
         fm, c = self.fm, self.ctrl
