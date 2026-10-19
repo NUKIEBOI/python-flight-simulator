@@ -36,6 +36,7 @@ from panda3d.core import (
     GeomVertexData,
     GeomVertexFormat,
     GeomVertexWriter,
+    MouseButton,
     NodePath,
     PNMImage,
     TextNode,
@@ -279,7 +280,8 @@ CONTROLS
 Takeoff: full throttle (hold Shift), rotate at 55 kts (pull S) --
   140 kts in the Viper jet.
 Tap F for the autopilot (holds wings level).
-Free cam: A/D orbit, W/S zoom, P exits.
+Free cam: WASD fly, Q/E down/up, hold Shift for 4x speed, scroll wheel
+  adjusts speed, right-mouse-drag to look, P exits.
 Mission: take off, fly 4 gates, intercept the drone, land (R resets).
 """
 
@@ -306,8 +308,12 @@ class FlightSim(ShowBase):
         self.ap_pitch_target = 0.0
         self.cam_mode = 0  # 0 chase, 1 cockpit, 2 tower, 3 top-down, 4 free
         self.ui_hidden = False
-        self.fc_az = 180.0
-        self.fc_dist = 45.0
+        self.fc_h = 0.0
+        self.fc_p = 0.0
+        self.fc_speed = 30.0
+        self._fc_mx = 0.0
+        self._fc_my = 0.0
+        self._fc_rmb = False
         self.prop_angle = 0.0
         self.keys = {}
         self.clouds = []
@@ -1194,6 +1200,8 @@ class FlightSim(ShowBase):
         tap("/", self._toggle_help)
         tap("p", self._toggle_freecam)
         tap("v", self._switch_aircraft)
+        self.accept("wheel_up", self._fc_speed_up)
+        self.accept("wheel_down", self._fc_speed_down)
         self.accept("escape", base.userExit)
 
     def _set_key(self, name, held):
@@ -1263,19 +1271,41 @@ class FlightSim(ShowBase):
                 node.show()
 
     def _toggle_freecam(self):
-        """P key: cinematic free-orbit camera. Engages the autopilot so the
-        plane flies itself while you orbit (A/D) and zoom (W/S)."""
+        """P key: true free camera. WASD flies the camera, Q/E go down/up,
+        holding Shift moves 4x faster, the scroll wheel adjusts base speed,
+        and holding right-mouse-button + moving the mouse looks around.
+        The plane is completely untouched: no pilot input, no autopilot."""
         if self.cam_mode == 4:
             self.cam_mode = 0
             self._radio("Free cam off - chase camera.")
         else:
             self.cam_mode = 4
+            px, py, pz = sim_to_panda(self.fm.pos)
             h, _p, _r = sim_quat_to_hpr(self.fm.quat)
-            self.fc_az = h + 180.0
-            self.fc_dist = 45.0
-            if not self.ap_enabled:
-                self._toggle_autopilot()
-            self._radio("Free cam - A/D orbit, W/S zoom, P exits. Autopilot on.")
+            hr = math.radians(h)
+            # Start 45 m behind and 12 m above, looking at the plane.
+            campos = np.array([px + math.sin(hr) * 45.0,
+                               py - math.cos(hr) * 45.0,
+                               pz + 12.0])
+            if self.camera is not None:
+                self.camera.setPos(*campos)
+            d = np.array([px, py, pz]) - campos
+            n = max(1e-6, float(np.linalg.norm(d)))
+            self.fc_h = math.degrees(math.atan2(-d[0], d[1]))
+            self.fc_p = math.degrees(math.asin(max(-1.0, min(1.0, d[2] / n))))
+            self.fc_speed = 30.0
+            self._fc_rmb = False
+            self._radio("Free cam - WASD move, Q/E up/down, Shift fast, wheel speed.")
+
+    def _fc_speed_up(self):
+        if self.cam_mode == 4:
+            self.fc_speed = min(500.0, self.fc_speed * 1.25)
+            self._radio(f"Free cam speed {self.fc_speed:.0f} m/s")
+
+    def _fc_speed_down(self):
+        if self.cam_mode == 4:
+            self.fc_speed = max(1.0, self.fc_speed / 1.25)
+            self._radio(f"Free cam speed {self.fc_speed:.0f} m/s")
 
     # -- training sortie --------------------------------------------------
     def _make_ring_node(self, name, r_in, r_out, segs=40):
@@ -1470,6 +1500,15 @@ class FlightSim(ShowBase):
     # -- per-frame update -------------------------------------------------
     def _update_controls_from_keys(self, dt):
         c = self.ctrl
+        if self.cam_mode == 4:
+            # Free cam: the pilot can't move the plane at all (the autopilot
+            # flies it). Surfaces ease back to neutral, throttle untouched.
+            for attr in ("elevator", "aileron", "rudder"):
+                cur = getattr(c, attr)
+                if cur != 0.0:
+                    step = math.copysign(min(abs(cur), 3.0 * dt), cur)
+                    setattr(c, attr, cur - step)
+            return
         # Elevator (classic flight-sim): Up/W = push (nose down),
         # Down/S = pull (nose up).
         elev_target = (1.0 if self._held("down") else 0.0) + \
@@ -1572,21 +1611,35 @@ class FlightSim(ShowBase):
             smooth = cur + (target - cur) * min(1.0, dt * 3.0)
             self.camera.setPos(*smooth)
             self.camera.lookAt(px, py, pz)
-        else:  # 4: free cam - orbit the plane while the AP flies it
+        else:  # 4: free cam - fly the camera anywhere with WASD/QE.
+            # The plane is on its own: no pilot input, no autopilot.
             self.active_plane.show()
-            az_rate = ((1.0 if self._held("right") else 0.0) -
-                       (1.0 if self._held("left") else 0.0))
-            self.fc_az += az_rate * 70.0 * dt
-            zoom_rate = ((1.0 if self._held("down") else 0.0) -
-                         (1.0 if self._held("up") else 0.0))
-            self.fc_dist = max(12.0, min(500.0,
-                                         self.fc_dist + zoom_rate * 90.0 * dt))
-            el, az = math.radians(18.0), math.radians(self.fc_az)
-            off = np.array([self.fc_dist * math.cos(el) * math.sin(az),
-                            self.fc_dist * math.cos(el) * math.cos(az),
-                            self.fc_dist * math.sin(el)])
-            self.camera.setPos(*(plane_pos + off))
-            self.camera.lookAt(px, py, pz)
+            hr, pr = math.radians(self.fc_h), math.radians(self.fc_p)
+            fwd = np.array([-math.sin(hr) * math.cos(pr),
+                            math.cos(hr) * math.cos(pr),
+                            math.sin(pr)])
+            right = np.array([math.cos(hr), -math.sin(hr), 0.0])
+            speed = self.fc_speed * (4.0 if self._held("thr_up") else 1.0)
+            move = (fwd * ((1.0 if self._held("up") else 0.0) -
+                           (1.0 if self._held("down") else 0.0)) +
+                    right * ((1.0 if self._held("right") else 0.0) -
+                             (1.0 if self._held("left") else 0.0)) +
+                    np.array([0.0, 0.0, 1.0]) *
+                    ((1.0 if self._held("rud_r") else 0.0) -
+                     (1.0 if self._held("rud_l") else 0.0)))
+            self.camera.setPos(*(np.array(self.camera.getPos()) +
+                                 move * speed * dt))
+            # Right-mouse drag: free look (no lock-on to the plane).
+            mw = self.mouseWatcherNode
+            if mw is not None and mw.hasMouse():
+                rmb = mw.isButtonDown(MouseButton.three())
+                mx, my = mw.getMouseX(), mw.getMouseY()
+                if rmb and self._fc_rmb:
+                    self.fc_h -= (mx - self._fc_mx) * 100.0
+                    self.fc_p = max(-85.0, min(85.0,
+                                               self.fc_p + (my - self._fc_my) * 80.0))
+                self._fc_mx, self._fc_my, self._fc_rmb = mx, my, rmb
+            self.camera.setHpr(self.fc_h, self.fc_p, 0.0)
 
     def _update_hud(self):
         fm, c = self.fm, self.ctrl

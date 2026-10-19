@@ -44,9 +44,9 @@ pip install -r requirements.txt
 ## Run
 
 ```bash
-cd python-flight-simulator
-git pull
-python main.py
+python main.py            # launch the 3D simulator (needs a display)
+python main.py --test     # headless scripted takeoff, prints telemetry
+python tests/test_flight_model.py   # physics verification tests
 ```
 
 ## Controls
@@ -64,7 +64,7 @@ python main.py
 | `T` / `G` | Elevator trim nose-up / nose-down |
 | `B` | Toggle wheel brakes |
 | `C` | Camera: chase → cockpit → tower → top-down |
-| `P` | Free cam (orbit with `A`/`D`, zoom with `W`/`S`; auto-engages autopilot) |
+| `P` | Free cam: fly with `WASD`, `Q`/`E` down/up, hold `Shift` for 4x speed, scroll wheel adjusts speed, right-mouse-drag to look. The plane is untouched (no pilot input, no autopilot) |
 | `V` | Switch aircraft: C-172 ↔ Viper jet |
 | `H` | Hide/show all UI |
 | `/` | Toggle help overlay |
