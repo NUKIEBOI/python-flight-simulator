@@ -41,6 +41,7 @@ from panda3d.core import (
     PNMImage,
     TextNode,
     Texture,
+    TextureStage,
     TransparencyAttrib,
     Vec4,
     loadPrcFileData,
@@ -310,10 +311,10 @@ class FlightSim(ShowBase):
         return self._tex_from_image(img, "ground")
 
     def _make_runway_texture(self):
-        """Crisp runway: asphalt, edge lines, centerline, thresholds,
+        """Crisp concrete runway: edge lines, centerline, thresholds,
         touchdown zones, and designation numbers. Runway runs along +Y."""
         W, H = 128, 2048
-        RW_W, RW_L = 24.0, 1240.0  # meters
+        RW_W, RW_L = 30.0, 1240.0  # meters
         rnd = random.Random(7)
         img = PNMImage(W, H)
 
@@ -328,7 +329,7 @@ class FlightSim(ShowBase):
         for j in range(H):
             for i in range(W):
                 n = rnd.uniform(-0.022, 0.022)
-                img.setXel(i, j, 0.25 + n, 0.25 + n, 0.27 + n)
+                img.setXel(i, j, 0.33 + n, 0.33 + n, 0.34 + n)
 
         def hline(y0_m, y1_m, x0_m, x1_m, col=white):
             for j in range(my(y1_m), my(y0_m) + 1):
@@ -337,8 +338,8 @@ class FlightSim(ShowBase):
                         img.setXel(i, j, *col)
 
         # Edge lines.
-        hline(-600, 600, 10.4, 11.1)
-        hline(-600, 600, -11.1, -10.4)
+        hline(-600, 600, 13.2, 13.9)
+        hline(-600, 600, -13.9, -13.2)
         # Centerline dashes: 30 m dash, 30 m gap.
         y = -585.0
         while y < 585.0:
@@ -348,15 +349,15 @@ class FlightSim(ShowBase):
         for end in (-1, 1):
             y_base = end * 606.0
             for bar in range(8):
-                x = -9.6 + bar * 2.75
+                x = -12.6 + bar * 3.4
                 hline(min(y_base, y_base - end * 18.0),
-                      max(y_base, y_base - end * 18.0), x, x + 1.7)
+                      max(y_base, y_base - end * 18.0), x, x + 2.2)
         # Touchdown zone pairs.
         for end in (-1, 1):
             for d in (150.0, 300.0, 450.0):
                 yc = end * (606.0 - d)
-                hline(yc - 6.0, yc + 6.0, 5.4, 7.0)
-                hline(yc - 6.0, yc + 6.0, -7.0, -5.4)
+                hline(yc - 6.0, yc + 6.0, 6.5, 8.3)
+                hline(yc - 6.0, yc + 6.0, -8.3, -6.5)
 
         # Designation numbers, 3x5 blocky font.
         font = {"0": ["111", "101", "101", "101", "111"],
@@ -386,6 +387,36 @@ class FlightSim(ShowBase):
         draw_number("27", -520.0, rot180=False)
         draw_number("09", 520.0, rot180=True)
         return self._tex_from_image(img, "runway")
+
+    def _make_concrete_texture(self, size=256, slab=64):
+        """Poured-concrete slabs with seams, for aprons and taxiways."""
+        rnd = random.Random(21)
+        img = PNMImage(size, size)
+        for j in range(size):
+            for i in range(size):
+                n = rnd.uniform(-0.02, 0.02)
+                seam = (i % slab < 2) or (j % slab < 2)
+                base = 0.36 if seam else 0.47
+                img.setXel(i, j, base + n, base + n, base + 0.01 + n)
+        return self._tex_from_image(img, "concrete")
+
+    def _make_taxiway_texture(self):
+        """Asphalt strip with a yellow centerline, tiled along its length."""
+        W, H = 64, 512
+        rnd = random.Random(33)
+        img = PNMImage(W, H)
+        for j in range(H):
+            for i in range(W):
+                n = rnd.uniform(-0.02, 0.02)
+                img.setXel(i, j, 0.30 + n, 0.30 + n, 0.31 + n)
+        # Yellow centerline (continuous, like a real taxiway).
+        for j in range(H):
+            for i in range(W // 2 - 2, W // 2 + 2):
+                img.setXel(i, j, 0.75, 0.62, 0.15)
+        tex = self._tex_from_image(img, "taxiway")
+        tex.setWrapU(Texture.WMRepeat)
+        tex.setWrapV(Texture.WMRepeat)
+        return tex
 
     def _make_sky_texture(self):
         """Vertical gradient: deep zenith blue -> warm horizon haze."""
@@ -467,7 +498,7 @@ class FlightSim(ShowBase):
 
         # Runway as its own card (crisp markings), along the takeoff axis.
         rcm = CardMaker("runway")
-        rcm.setFrame(-12, 12, -620, 620)
+        rcm.setFrame(-15, 15, -620, 620)
         runway = self.render.attachNewNode(rcm.generate())
         runway.setTexture(self._make_runway_texture())
         runway.setPos(0, 0, 0.06)
@@ -535,31 +566,132 @@ class FlightSim(ShowBase):
         fog.setExpDensity(0.00040)
         self.render.setFog(fog)
 
-        self._build_airport(rnd)
+        self._build_airbase(rnd)
 
-    def _build_airport(self, rnd):
-        """Hangars, windsock, trees, and runway edge lights."""
-        gray = (0.62, 0.63, 0.66)
-        dark_gray = (0.38, 0.39, 0.42)
-        # Two hangars east of the runway.
-        for hx, hy in ((150, -80), (150, 70)):
-            walls = NodePath(make_box_node("hangar", 30, 20, 9, gray))
-            walls.setPos(hx, hy, 4.5)
+    def _build_airbase(self, rnd):
+        """Military airbase: parallel taxiway, apron, control tower,
+        hangars, hardened shelters, rotating radar, parked jets, and
+        support vehicles."""
+        concrete = self._make_concrete_texture()
+        concrete.setWrapU(Texture.WMRepeat)
+        concrete.setWrapV(Texture.WMRepeat)
+
+        def pave(name, x0, x1, y0, y1, z=0.04, rep_u=1, rep_v=1, tex=None):
+            cm = CardMaker(name)
+            cm.setFrame(x0, x1, y0, y1)
+            n = self.render.attachNewNode(cm.generate())
+            n.setTexture(concrete if tex is None else tex)
+            n.setTexScale(TextureStage.getDefault(), rep_u, rep_v)
+            n.setPos(0, 0, z)
+            return n
+
+        # Parallel taxiway east of the runway + three connectors.
+        pave("taxiway", 82, 98, -620, 620, tex=self._make_taxiway_texture(),
+             rep_v=12)
+        for yc in (-400, 0, 400):
+            pave("connector_%d" % yc, 14, 84, yc - 7, yc + 7)
+        # Main apron.
+        pave("apron", 110, 290, -180, 180, rep_u=3, rep_v=6)
+
+        gray = (0.60, 0.61, 0.64)
+        dark = (0.36, 0.37, 0.40)
+
+        # Control tower.
+        tower_parts = [
+            ("tshaft", 9, 9, 30, gray, (200, -240, 15)),
+            ("tcab", 14, 14, 5.5, (0.13, 0.19, 0.27), (200, -240, 32.5)),
+            ("troof", 15.5, 15.5, 1.0, dark, (200, -240, 35.8)),
+            ("tmast", 0.5, 0.5, 9, dark, (200, -240, 40.5)),
+        ]
+        for name, ex, ey, ez, color, pos in tower_parts:
+            node = NodePath(make_box_node(name, ex, ey, ez, color))
+            node.setPos(*pos)
+            node.reparentTo(self.render)
+
+        # Hangar row.
+        for hy in (-100, -20, 60):
+            walls = NodePath(make_box_node("hangar", 46, 32, 12, gray))
+            walls.setPos(205, hy, 6)
             walls.reparentTo(self.render)
-            roof = NodePath(make_box_node("roof", 33, 23, 1.2, dark_gray))
-            roof.setPos(hx, hy, 9.6)
+            roof = NodePath(make_box_node("hangar_roof", 49, 35, 1.4, dark))
+            roof.setPos(205, hy, 12.7)
             roof.reparentTo(self.render)
-            door = NodePath(make_box_node("door", 20, 0.4, 7, (0.16, 0.17, 0.20)))
-            door.setPos(hx - 15.1, hy, 3.5)
+            door = NodePath(make_box_node("hangar_door", 0.5, 30, 9,
+                                          (0.15, 0.16, 0.19)))
+            door.setPos(205 - 23.2, hy, 4.5)
             door.reparentTo(self.render)
 
+        # Hardened aircraft shelters (earth tone).
+        for hx, hy in ((262, -140), (262, 140)):
+            sh = NodePath(make_box_node("has", 26, 20, 9, (0.46, 0.43, 0.35)))
+            sh.setPos(hx, hy, 4.5)
+            sh.reparentTo(self.render)
+            shr = NodePath(make_box_node("has_roof", 28, 22, 1.2,
+                                         (0.38, 0.35, 0.28)))
+            shr.setPos(hx, hy, 9.6)
+            shr.reparentTo(self.render)
+
+        # Radar: pedestal + rotating dome.
+        ped = NodePath(make_box_node("radar_ped", 7, 7, 10, gray))
+        ped.setPos(330, 260, 5)
+        ped.reparentTo(self.render)
+        self.radar_dome = NodePath(make_sphere_node("radome", 4.6))
+        self.radar_dome.setColor(0.90, 0.90, 0.92)
+        self.radar_dome.setPos(330, 260, 14.6)
+        self.radar_dome.reparentTo(self.render)
+
+        # Parked jets on the apron.
+        for jx, jy in ((150, -120), (150, -40), (150, 40)):
+            self._build_static_jet(jx, jy, 90.0)
+
+        # Fuel truck.
+        truck = self.render.attachNewNode("truck")
+        tparts = [
+            ("cab", 2.6, 2.8, 2.6, (0.36, 0.37, 0.29), (0, 3.6, 1.7)),
+            ("tank", 2.8, 6.8, 2.8, (0.72, 0.72, 0.68), (0, -1.2, 1.9)),
+            ("chassis", 2.4, 10.5, 0.7, dark, (0, 0, 0.75)),
+        ]
+        for name, ex, ey, ez, color, pos in tparts:
+            node = NodePath(make_box_node(name, ex, ey, ez, color))
+            node.setPos(*pos)
+            node.setTwoSided(True)
+            node.reparentTo(truck)
+        for wx, wy in ((-1.2, 3.6), (1.2, 3.6), (-1.2, -0.5), (1.2, -0.5),
+                       (-1.2, -3.2), (1.2, -3.2)):
+            wheel = NodePath(make_box_node("wheel", 0.5, 0.9, 0.9,
+                                           (0.08, 0.08, 0.09)))
+            wheel.setPos(wx, wy, 0.45)
+            wheel.reparentTo(truck)
+        truck.setPos(235, -160, 0)
+        truck.setH(15.0)
+
+        # Apron floodlight poles.
+        for fx, fy in ((115, -175), (285, -175), (115, 175), (285, 175)):
+            pole = NodePath(make_box_node("flood_pole", 0.4, 0.4, 20, dark))
+            pole.setPos(fx, fy, 10)
+            pole.reparentTo(self.render)
+            head = NodePath(make_box_node("flood_head", 3.2, 1.0, 0.8,
+                                          (0.2, 0.2, 0.22)))
+            head.setPos(fx, fy, 20.3)
+            head.reparentTo(self.render)
+            fcm = CardMaker("flood_glow")
+            fcm.setFrame(-2.2, 2.2, -2.2, 2.2)
+            g = self.render.attachNewNode(fcm.generate())
+            g.setTexture(self.glow_tex)
+            g.setColor(1.0, 0.92, 0.70, 0.9)
+            g.setBillboardPointEye()
+            g.setTransparency(TransparencyAttrib.MAlpha)
+            g.setLightOff()
+            g.setDepthWrite(False)
+            g.setPos(fx, fy, 19.7)
+
         # Windsock near the south end.
-        pole = NodePath(make_box_node("pole", 0.18, 0.18, 6.5, (0.75, 0.75, 0.78)))
+        pole = NodePath(make_box_node("pole", 0.18, 0.18, 6.5,
+                                      (0.75, 0.75, 0.78)))
         pole.setPos(28, -560, 3.25)
         pole.reparentTo(self.render)
         self.sock_pivot = self.render.attachNewNode("sock_pivot")
         self.sock_pivot.setPos(28, -560, 6.4)
-        # Tapered sock: wide end into the wind, built along +Y.
         fmt = GeomVertexFormat.getV3c4()
         vdata = GeomVertexData("sock", fmt, Geom.UHStatic)
         vw = GeomVertexWriter(vdata, "vertex")
@@ -569,8 +701,9 @@ class FlightSim(ShowBase):
             for i in range(segs):
                 a = 2.0 * math.pi * i / segs
                 vw.addData3(rr * math.cos(a), yy, rr * math.sin(a))
-                # Alternate orange / white bands along the length.
-                cw.addData4(0.95, 0.45, 0.10, 1.0) if ring == 0 else \
+                if ring == 0:
+                    cw.addData4(0.95, 0.45, 0.10, 1.0)
+                else:
                     cw.addData4(0.94, 0.94, 0.94, 1.0)
         tris = GeomTriangles(Geom.UHStatic)
         for i in range(segs):
@@ -585,7 +718,7 @@ class FlightSim(ShowBase):
         sock.setTwoSided(True)
         sock.reparentTo(self.sock_pivot)
 
-        # Trees: pines scattered clear of the runway corridor and airport.
+        # Trees: pines scattered clear of the runway and the base complex.
         trunk_c = (0.30, 0.22, 0.15)
         leaf_c = [(0.16, 0.34, 0.16), (0.20, 0.40, 0.18)]
         placed = 0
@@ -594,7 +727,9 @@ class FlightSim(ShowBase):
             y = rnd.uniform(-1900, 1900)
             if abs(x) < 55 and abs(y) < 700:
                 continue
-            if math.hypot(x - 150, y) < 120:
+            if x > 40 and abs(y) < 720:
+                continue
+            if math.hypot(x - 330, y - 260) < 70:
                 continue
             if math.hypot(x, y) < 230:
                 continue
@@ -604,8 +739,7 @@ class FlightSim(ShowBase):
             trunk.setPos(x, y, 1.1 * s)
             trunk.reparentTo(self.render)
             lc = leaf_c[placed % 2]
-            for k, (rr, hh, zz) in enumerate(((2.6, 4.2, 2.0),
-                                             (1.8, 3.0, 4.6))):
+            for rr, hh, zz in ((2.6, 4.2, 2.0), (1.8, 3.0, 4.6)):
                 cone = NodePath(make_cone_node("pine", rr * s, hh * s, lc))
                 cone.setPos(x, y, zz * s)
                 cone.reparentTo(self.render)
@@ -613,7 +747,7 @@ class FlightSim(ShowBase):
 
         # Runway edge lights: small posts with a warm glow.
         for y in range(-600, 601, 60):
-            for x in (-13.5, 13.5):
+            for x in (-16.5, 16.5):
                 post = NodePath(make_box_node("elpost", 0.14, 0.14, 0.9,
                                               (0.2, 0.2, 0.22)))
                 post.setPos(x, y, 0.45)
@@ -628,6 +762,47 @@ class FlightSim(ShowBase):
                 g.setLightOff()
                 g.setDepthWrite(False)
                 g.setPos(x, y, 1.1)
+
+    def _build_static_jet(self, x, y, heading):
+        """Simple parked military jet silhouette (procedural boxes)."""
+        jet = self.render.attachNewNode("static_jet")
+        gray = (0.44, 0.45, 0.48)
+        dark = (0.14, 0.14, 0.16)
+        glass = (0.10, 0.14, 0.20)
+        parts = [
+            ("jfus", 1.7, 11.0, 1.7, gray, (0, 0, 1.7)),
+            ("jcanopy", 0.95, 2.6, 0.75, glass, (0, 2.4, 2.75)),
+            ("jtail", 2.6, 1.0, 0.12, gray, (0, -4.7, 1.8)),
+            ("jfin", 0.14, 1.3, 2.1, gray, (0, -4.7, 2.9)),
+            ("jnozzle", 1.0, 0.9, 1.0, dark, (0, -5.7, 1.7)),
+            ("jgear_n", 0.3, 0.3, 1.0, dark, (0, 3.4, 0.5)),
+            ("jgear_l", 0.3, 0.3, 1.0, dark, (-1.1, -0.6, 0.5)),
+            ("jgear_r", 0.3, 0.3, 1.0, dark, (1.1, -0.6, 0.5)),
+        ]
+        for name, ex, ey, ez, color, pos in parts:
+            node = NodePath(make_box_node(name, ex, ey, ez, color))
+            node.setPos(*pos)
+            node.setTwoSided(True)
+            node.reparentTo(jet)
+        # Swept wings and tailplanes (tips angled back).
+        for side in (-1, 1):
+            wing = NodePath(make_box_node("jwing", 5.4, 1.7, 0.14, gray))
+            wing.setPos(side * 3.1, -0.9, 1.55)
+            wing.setH(-side * 28.0)
+            wing.setTwoSided(True)
+            wing.reparentTo(jet)
+            stab = NodePath(make_box_node("jstab", 2.4, 0.9, 0.10, gray))
+            stab.setPos(side * 1.5, -4.7, 1.8)
+            stab.setH(-side * 22.0)
+            stab.setTwoSided(True)
+            stab.reparentTo(jet)
+        # Pointed nose.
+        nose = NodePath(make_cone_node("jnose", 0.85, 2.4, gray))
+        nose.setP(-90)  # apex forward (+Y)
+        nose.setPos(0, 5.5, 1.7)
+        nose.reparentTo(jet)
+        jet.setPos(x, y, 0)
+        jet.setH(heading)
 
     # -- airplane ---------------------------------------------------------
     def _build_airplane(self):
@@ -888,9 +1063,10 @@ class FlightSim(ShowBase):
             self.strobe.show()
         else:
             self.strobe.hide()
-        # Windsock sway.
+        # Windsock sway + radar sweep.
         t = self.fm.time
         self.sock_pivot.setH(18.0 * math.sin(t * 0.6) + 8.0 * math.sin(t * 1.7))
+        self.radar_dome.setH((t * 25.0) % 360.0)
         # Clouds drift and wrap.
         for node, speed in self.clouds:
             x = node.getX() + speed * dt
